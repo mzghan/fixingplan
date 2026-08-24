@@ -198,9 +198,23 @@ $(function () {
   }
   const vendorBatchToKiriKananIndexMap = new Map();
 
-  // Vendor dropdown: select2 remote search. Server return max 5 vendor saat
-  // dropdown dibuka pertama kali tanpa keyword, lalu search ke server saat user ngetik.
-  // Endpoint (dibuat di langkah controller/model): GET .../get_vendor_search?q=&page=
+  // Placeholder result select2 yang tidak bisa dipilih, dipakai sebagai hint
+  // "ketik untuk mencari" saat dropdown baru dibuka (query kosong) supaya user
+  // tahu harus mengetik untuk mencari data selain 5 yang tampil pertama.
+  function withSearchHint(results, term) {
+    if (term || !results || results.length === 0) return results;
+    return results.concat([
+      {
+        id: "__search_hint__",
+        text: "Ketik untuk mencari data lainnya...",
+        disabled: true,
+      },
+    ]);
+  }
+
+  // Vendor dropdown: select2 remote search. Server hanya return 5 vendor saat
+  // dropdown dibuka pertama kali tanpa keyword (tanpa pagination), baru search
+  // ke server saat user mengetik. Endpoint: get_vendor_search?q=&page=
   // Response: { results: [{ id, text }], pagination: { more: bool } }
   function initVendorSelect2($select, defaultVendorId) {
     $select.html("<option></option>").select2({
@@ -220,7 +234,7 @@ $(function () {
             vendorMap[vendor.id] = vendor.text;
           });
           return {
-            results: data.results || [],
+            results: withSearchHint(data.results || [], params.term),
             pagination: { more: !!(data.pagination && data.pagination.more) },
           };
         },
@@ -273,8 +287,40 @@ $(function () {
     }).format(num);
   }
 
+  // Update rowData + kolom "Item Unit" setelah item code dipilih/berubah.
+  // Dipakai dari handler "change" (path programatic: default value saat load,
+  // duplicate row) maupun langsung dari "select2:select" (path interaktif:
+  // user pilih item dari dropdown).
+  function applyItemUnitToRow(
+    $selectElement,
+    itemId,
+    itemUnitId,
+    unitName,
+    itemCodeText,
+  ) {
+    const $currentRow = $selectElement.closest("tr");
+    const rowId = $currentRow.attr("data-rowid");
+
+    let rowData = rowId
+      ? allTableTengahData.find((item) => item.rowId === rowId)
+      : null;
+    if (!rowData) {
+      rowData = allTableTengahData[$currentRow.index()];
+    }
+
+    if (rowData) {
+      rowData.itemCode = parseInt(itemId, 10) || 0;
+      rowData.itemUnitId = parseInt(itemUnitId, 10) || 0;
+      rowData.itemCodeText = itemCodeText || "";
+      rowData.unitName = unitName || "";
+    }
+
+    $currentRow.find(".item-unit-field").val(unitName || "");
+    updateDuplicateButtonVisibility();
+  }
+
   // Item dropdown: select2 remote search, sama pola dengan vendor.
-  // Endpoint (dibuat di langkah controller/model): GET .../get_item_search?q=&page=
+  // Endpoint: get_item_search?q=&page=
   // Response: { results: [{ id, text, code, itemunitid, unitname }], pagination: { more } }
   function initItemSelect2($select, defaultItem) {
     $select.html("<option></option>").select2({
@@ -290,7 +336,7 @@ $(function () {
         processResults: function (data, params) {
           params.page = params.page || 1;
           return {
-            results: data.results || [],
+            results: withSearchHint(data.results || [], params.term),
             pagination: { more: !!(data.pagination && data.pagination.more) },
           };
         },
@@ -298,15 +344,30 @@ $(function () {
       },
     });
 
-    // select2:select selalu ter-trigger sebelum event "change" milik <select> asli,
-    // jadi data-code/itemunitid/unitname sudah tersedia saat handler "change" lain baca .data()
     $select.on("select2:select", function (e) {
       const data = e.params.data || {};
+
+      // Simpan juga sebagai data-* attribute di <option>, dipakai path
+      // programatic (duplicate row / load awal) lewat handler "change" di bawah.
       $(this)
         .find("option:selected")
         .attr("data-code", data.code || "")
         .attr("data-itemunitid", data.itemunitid || "")
         .attr("data-unitname", data.unitname || "");
+
+      // PENTING: di Select2 4.1 event native "change" pada <select> ternyata
+      // terpicu LEBIH DULU daripada "select2:select" (kebalikan dari asumsi
+      // sebelumnya). Kalau update Item Unit hanya dilakukan di handler "change",
+      // field itu akan kebaca data lama karena data-* di atas belum sempat
+      // ke-set saat "change" jalan. Makanya di sini update-nya langsung
+      // pakai data dari respons AJAX (e.params.data), tidak menunggu "change".
+      applyItemUnitToRow(
+        $(this),
+        data.id,
+        data.itemunitid,
+        data.unitname,
+        data.code,
+      );
     });
 
     if (defaultItem && defaultItem.id) {
@@ -1454,9 +1515,32 @@ $(function () {
     addRowTableTengah(idTable);
     const $newRow = $tableBody.find("tr:last");
 
-    // 1. Item Code - perlu trigger untuk update unit field
-    if (lastData.itemCode) {
-      $newRow.find(".item-code-field").val(lastData.itemCode).trigger("change");
+    // 1. Item Code - select2 pakai ajax (tidak ada <option> preloaded), jadi
+    // ".val(id).trigger('change')" tidak akan bekerja karena tidak ada option
+    // dengan value tsb di DOM. Solusinya clone <option> yang sedang terpilih
+    // dari row sebelumnya (sudah punya text + data-code/itemunitid/unitname
+    // yang benar), baru trigger change.
+    const $lastSelectedItemOption = $lastRow.find(
+      ".item-code-field option:selected",
+    );
+    if (lastData.itemCode && $lastSelectedItemOption.val()) {
+      const clonedItemOption = new Option(
+        $lastSelectedItemOption.text(),
+        $lastSelectedItemOption.val(),
+        true,
+        true,
+      );
+      $(clonedItemOption)
+        .attr("data-code", $lastSelectedItemOption.data("code") || "")
+        .attr(
+          "data-itemunitid",
+          $lastSelectedItemOption.data("itemunitid") || "",
+        )
+        .attr("data-unitname", $lastSelectedItemOption.data("unitname") || "");
+      $newRow
+        .find(".item-code-field")
+        .append(clonedItemOption)
+        .trigger("change");
     }
     // 2. Vendor - perlu trigger untuk update vendor map
     $newRow.find(".vendorSelector").val(lastData.vendor).trigger("change");
@@ -1675,43 +1759,22 @@ $(function () {
     },
   );
 
+  // Menangani path programatic: default item saat load data awal, dan set
+  // value saat duplicate row (lihat initItemSelect2 & duplicateLastRowTableTengah).
+  // Untuk selection interaktif dari dropdown, update sudah dilakukan di
+  // "select2:select" (initItemSelect2) - handler ini tetap jalan juga untuk
+  // kasus itu tapi datanya sudah konsisten karena data-* attribute sudah di-set duluan.
   $(document).on("change", ".item-code-field", function () {
     const $selectElement = $(this);
-    const $currentRow = $selectElement.closest("tr");
-    const rowId = $currentRow.attr("data-rowid");
-
-    const selectedId = $selectElement.val();
     const $selectedOption = $selectElement.find("option:selected");
-    const itemUnitId =
-      parseInt($selectElement.find(":selected").data("itemunitid"), 10) || 0;
-    const unitName = $selectElement.find(":selected").data("unitname") || "";
-    const selectedText = $selectElement.find("option:selected").text();
-    const itemCodeText = $selectedOption.data("code") || "";
 
-    // update ke array menggunakan rowId
-    let rowData = null;
-    if (rowId) {
-      rowData = allTableTengahData.find((item) => item.rowId === rowId);
-    }
-
-    // fallback ke index jika rowId tidak ada
-    if (!rowData) {
-      const rowIndex = $currentRow.index();
-      rowData = allTableTengahData[rowIndex];
-    }
-
-    if (rowData) {
-      rowData.itemCode = parseInt(selectedId, 10) || 0;
-      rowData.itemUnitId = itemUnitId;
-      rowData.itemCodeText = itemCodeText;
-      rowData.unitName = unitName;
-    }
-
-    // update field readonly di kolom unit
-    $currentRow.find(".item-unit-field").val(unitName);
-
-    // Update visibility button duplicate setelah item berubah
-    updateDuplicateButtonVisibility();
+    applyItemUnitToRow(
+      $selectElement,
+      $selectElement.val(),
+      $selectedOption.data("itemunitid"),
+      $selectedOption.data("unitname"),
+      $selectedOption.data("code"),
+    );
   });
 
   function getWeekOfYear(date) {

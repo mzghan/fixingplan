@@ -3747,18 +3747,7 @@ $shipment_detail = $this->db->query($sql_shipment, [
         return $campaignList;
     }
 
-    public function getItemList()
-    {
-        $query = "SELECT distinct a.id, a.code, a.description, c.id as itemunitid, c.unitname, a.Type, a.coaattrid itemdeptid
-                    FROM dbmitem a
-                    LEFT JOIN ods4..dbmitemmarketingname b ON a.id = b.itemid
-                    JOIN dbmitemunit c ON a.id = c.itemid AND c.status <> 0
-                    WHERE a.status <> 0";
-        $itemList = $this->db->query($query)->result_array();
-        return $itemList;
-    }
-
-    // Versi search + pagination dari getItemList(), dipakai select2 lazy-load
+    // Versi search + pagination, dipakai select2 lazy-load
     // supaya halaman awal tidak perlu narik semua item sekaligus.
     public function searchItemList($term = '', $limit = 5, $offset = 0)
     {

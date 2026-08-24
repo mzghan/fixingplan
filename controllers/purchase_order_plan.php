@@ -654,47 +654,12 @@ public function add_new_color()
     }
 }
 
-  public function get_item_list()
-  {
-    $items = $this->pom->getItemList();
-    $this->output->set_content_type('application/json');
-    echo json_encode($items);
-  }
   public function get_color_list()
   {
     $items = $this->pom->getColorList();
     $this->output->set_content_type('application/json');
     echo json_encode($items);
   }
-  public function get_vendor()
-  {
-
-    log_message('debug', 'Attempting to call get_vendor in Purchase_order_plan.');
-    ob_start();
-    $this->get_coaattr_customer_vendor();
-
-    $json_output = ob_get_clean();
-
-    if (empty(trim($json_output))) {
-      log_message('error', 'get_vendor_purchasePlan: Captured JSON output is empty. Check get_coaattr_customer_vendor logic.');
-      $this->output->set_content_type('application/json');
-      echo json_encode(['error' => 'No output from get_coaattr_customer_vendor']);
-      return;
-    }
-
-    $decoded_json = json_decode($json_output, true);
-    if (json_last_error() !== JSON_ERROR_NONE) {
-      log_message('error', 'get_vendor_purchasePlan: JSON decoding error: ' . json_last_error_msg() . ' Raw output: ' . $json_output);
-
-      $this->output->set_content_type('application/json');
-      echo json_encode(['error' => 'Invalid JSON from get_coaattr_customer_vendor', 'raw_response' => substr($json_output, 0, 200)]);
-      return;
-    }
-
-    $this->output->set_content_type('application/json');
-    echo $json_output;
-  }
-
   // Endpoint untuk select2 lazy-load vendor di Purchase Plan.
   // Awalnya (tanpa q) return 5 vendor pertama, saat user mengetik baru search ke server.
   //
@@ -744,9 +709,14 @@ public function add_new_color()
       ];
     }, $pageItems);
 
+    // Saat q kosong (dropdown baru dibuka), pagination sengaja dimatikan supaya
+    // tidak infinite-scroll menarik semua vendor pelan-pelan. User harus mengetik
+    // untuk mencari vendor selain 5 yang tampil pertama.
+    $hasMore = ($term === '') ? false : (($offset + $limit) < $total);
+
     echo json_encode([
       'results' => $results,
-      'pagination' => ['more' => ($offset + $limit) < $total],
+      'pagination' => ['more' => $hasMore],
     ]);
   }
 
@@ -767,6 +737,12 @@ public function add_new_color()
     $items = $this->pom->searchItemList($term, $limit + 1, $offset);
     $hasMore = count($items) > $limit;
     $items = array_slice($items, 0, $limit);
+
+    // Sama seperti vendor: q kosong = tampilan awal, pagination dimatikan
+    // supaya user diarahkan untuk mengetik daripada scroll menarik semua item.
+    if ($term === '') {
+      $hasMore = false;
+    }
 
     $results = array_map(function ($item) {
       return [
