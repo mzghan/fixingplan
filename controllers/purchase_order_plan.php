@@ -697,32 +697,40 @@ public function add_new_color()
 
   // Endpoint untuk select2 lazy-load vendor di Purchase Plan.
   // Awalnya (tanpa q) return 5 vendor pertama, saat user mengetik baru search ke server.
-  // Reuse get_coaattr_customer_vendor() (sumber data yang sama dengan get_vendor()) supaya
-  // daftar vendor tetap konsisten dengan endpoint lama, hanya sekarang di-page & di-filter.
+  //
+  // Reuse get_coaattr_customer_vendor() - sumber data yang sama dipakai fungsi asli
+  // loadVendorOptionsAndMap() di eventListener.js sebelum lazy-load. Parameter & format
+  // response di bawah ini diverifikasi dari fungsi tersebut (POST, type=20010, response
+  // berupa array polos dengan field ID & coName) - bukan tebakan.
+  //
+  // PENTING: get_coaattr_customer_vendor() mensyaratkan request method POST. Endpoint ini
+  // HARUS dipanggil via POST (lihat konfigurasi select2 ajax di initVendorSelect2, eventListener.js).
+  // Test manual lewat address bar browser (selalu GET) TIDAK akan pernah berhasil - itu bukan bug.
   public function get_vendor_search()
   {
     $this->output->set_content_type('application/json');
 
-    $term = trim($this->input->get('q'));
-    $page = (int) $this->input->get('page');
+    $term = trim($this->input->post('q'));
+    $page = (int) $this->input->post('page');
     if ($page < 1) $page = 1;
 
     $limit = ($term === '') ? 5 : 20;
     $offset = ($page - 1) * $limit;
 
+    // get_coaattr_customer_vendor() baca parameter 'type' dari $_POST, bukan dari argumen fungsi
+    $originalPost = $_POST;
+    $_POST['type'] = '20010';
     ob_start();
     $this->get_coaattr_customer_vendor();
     $json_output = ob_get_clean();
+    $_POST = $originalPost;
 
     $decoded = json_decode($json_output, true);
-    $allVendors = (json_last_error() === JSON_ERROR_NONE && !empty($decoded['data']))
-      ? $decoded['data']
-      : [];
+    $allVendors = (json_last_error() === JSON_ERROR_NONE && is_array($decoded)) ? $decoded : [];
 
     if ($term !== '') {
       $allVendors = array_values(array_filter($allVendors, function ($v) use ($term) {
-        $name = $v['coName'] ?? $v['Description'] ?? $v['name'] ?? '';
-        return stripos($name, $term) !== false;
+        return stripos($v['coName'] ?? '', $term) !== false;
       }));
     }
 
@@ -731,8 +739,8 @@ public function add_new_color()
 
     $results = array_map(function ($v) {
       return [
-        'id'   => $v['coCode'] ?? $v['ID'] ?? $v['id'] ?? '',
-        'text' => $v['coName'] ?? $v['Description'] ?? $v['name'] ?? '',
+        'id'   => $v['ID'] ?? '',
+        'text' => $v['coName'] ?? '',
       ];
     }, $pageItems);
 

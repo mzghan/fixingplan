@@ -208,6 +208,7 @@ $(function () {
       minimumInputLength: 0,
       ajax: {
         url: BASE_URL + "scm/purchasing/purchase_order_plan/get_vendor_search",
+        type: "POST",
         dataType: "json",
         delay: 300,
         data: function (params) {
