@@ -21,15 +21,10 @@ $(function () {
 
   $("#deldocreff").css("pointer-events", "none");
   $("#deldocreff").attr("disabled", "disabled");
-  let vendorMap = {};
-  let itemData = [];
-  let vendorData = [];
-  // variable array table tengah || ini harus menampung seluruh data yang ada di table tengah
+  let vendorMap = {}; // id -> nama vendor, diisi bertahap saat vendor dipilih di dropdown
   let allTableTengahData = [];
   let allTableKiriData = [];
-  let noTable = 1;
-  let kumpulanDataTableKiriKanan = []; // awal declare> Kalau ww diganti dan ada leadtime maka harus langsung menghitung ulang lagi buat po date dan blanket ests
-  let vendorMap_reverse = {};
+  let kumpulanDataTableKiriKanan = [];
   let docDate = $("#DocDate").val();
   let itemDesc = $("#ItemDesc").val();
 
@@ -93,12 +88,7 @@ $(function () {
     let currID = $(this).val();
     let docDate = $("#DocDate").val();
 
-    // console.log("=== CURRENCY CHANGED ===");
-    // console.log("Selected Currency ID:", currID);
-    // console.log("Selected DocDate:", docDate);
-
     if (currID && docDate) {
-      // console.log("Fetching currency rate...");
       getDataKurs(currID, docDate);
     } else {
       console.warn("Currency change ignored (currID/docDate empty)");
@@ -111,8 +101,6 @@ $(function () {
     const $wwSelect = $row.find(".ww-field");
     const rowId = $row.attr("data-rowid");
 
-    // console.log("Year changed:", year, "rowId:", rowId);
-
     // Update data model dengan shipment year baru
     if (rowId) {
       const rowData = allTableTengahData.find((item) => item.rowId === rowId);
@@ -123,7 +111,6 @@ $(function () {
           rowData.ww = "";
           rowData.shipmentDate = "";
         }
-        // console.log("Updated shipmentYear in array:", year);
       }
     }
 
@@ -211,36 +198,46 @@ $(function () {
   }
   const vendorBatchToKiriKananIndexMap = new Map();
 
-  function loadVendorOptionsAndMap() {
-    return $.ajax({
-      url: BASE_URL + "scm/purchasing/purchase_order_plan/get_vendor",
-      type: "POST",
-      dataType: "json",
-      data: { type: "20010" },
-    })
-      .done(function (data) {
-        vendorData = Array.isArray(data) ? data : [];
-        vendorMap = {};
-        vendorMap_reverse = {};
-        vendorOptionsHTML = '<option value="">-- Pilih Vendor --</option>'; // reset
-
-        vendorData.forEach(function (vendor) {
-          vendorMap[vendor.ID] = vendor.coName;
-          vendorMap_reverse[vendor.coName] = vendor.ID;
-          vendorOptionsHTML += `<option value="${vendor.ID}">${vendor.coName}</option>`;
-        });
-      })
-      .fail(function (jqXHR, textStatus, errorThrown) {
-        console.error("Error loading vendor data:", textStatus, errorThrown);
-      });
-  }
-  // Render vendor dropdown dari array
-  function renderVendorDropdown($select) {
-    let html = '<option value="">-- Pilih Vendor --</option>';
-    vendorData.forEach((vendor) => {
-      html += `<option value="${vendor.ID}">${vendor.coName}</option>`;
+  // Vendor dropdown: select2 remote search. Server return max 5 vendor saat
+  // dropdown dibuka pertama kali tanpa keyword, lalu search ke server saat user ngetik.
+  // Endpoint (dibuat di langkah controller/model): GET .../get_vendor_search?q=&page=
+  // Response: { results: [{ id, text }], pagination: { more: bool } }
+  function initVendorSelect2($select, defaultVendorId) {
+    $select.html("<option></option>").select2({
+      placeholder: "-- Pilih Vendor --",
+      minimumInputLength: 0,
+      ajax: {
+        url: BASE_URL + "scm/purchasing/purchase_order_plan/get_vendor_search",
+        dataType: "json",
+        delay: 300,
+        data: function (params) {
+          return { q: params.term || "", page: params.page || 1 };
+        },
+        processResults: function (data, params) {
+          params.page = params.page || 1;
+          (data.results || []).forEach(function (vendor) {
+            vendorMap[vendor.id] = vendor.text;
+          });
+          return {
+            results: data.results || [],
+            pagination: { more: !!(data.pagination && data.pagination.more) },
+          };
+        },
+        cache: true,
+      },
     });
-    $select.html(html);
+
+    if (defaultVendorId) {
+      const defaultVendorName =
+        vendorMap[defaultVendorId] || String(defaultVendorId);
+      const preselected = new Option(
+        defaultVendorName,
+        defaultVendorId,
+        true,
+        true,
+      );
+      $select.append(preselected).trigger("change");
+    }
   }
 
   function formatToIdr(number) {
@@ -275,39 +272,50 @@ $(function () {
     }).format(num);
   }
 
-  function loadItemOptions() {
-    return $.ajax({
-      url: BASE_URL + "scm/purchasing/purchase_order_plan/get_item_list",
-      type: "GET",
-      dataType: "json",
-    })
-      .done(function (data) {
-        itemData = Array.isArray(data) ? data : [];
-        // console.log(`Item data stored in memory. Total: ${itemData.length}`);
-
-        // build HTML-nya sekali
-        itemOptionsHTML = '<option value="">-- Pilih Item --</option>';
-        itemData.forEach(function (item) {
-          itemOptionsHTML += `<option value="${item.id}" data-code="${item.code}" data-itemunitid="${item.itemunitid}" data-unitname="${item.unitname}">
-            ${item.code}-${item.description}-${item.unitname}
-          </option>`;
-        });
-      })
-      .fail(function (jqXHR, textStatus, errorThrown) {
-        console.error(
-          "Kesalahan saat memuat opsi item:",
-          textStatus,
-          errorThrown,
-        );
-      });
-  }
-  // fungsi untuk render dropdown dari array itemData
-  function renderItemDropdown($select) {
-    let html = '<option value="">-- Pilih Item --</option>';
-    itemData.forEach((item) => {
-      html += `<option value="${item.id}">${item.code}-${item.description}</option>`;
+  // Item dropdown: select2 remote search, sama pola dengan vendor.
+  // Endpoint (dibuat di langkah controller/model): GET .../get_item_search?q=&page=
+  // Response: { results: [{ id, text, code, itemunitid, unitname }], pagination: { more } }
+  function initItemSelect2($select, defaultItem) {
+    $select.html("<option></option>").select2({
+      placeholder: "-- Pilih Item --",
+      minimumInputLength: 0,
+      ajax: {
+        url: BASE_URL + "scm/purchasing/purchase_order_plan/get_item_search",
+        dataType: "json",
+        delay: 300,
+        data: function (params) {
+          return { q: params.term || "", page: params.page || 1 };
+        },
+        processResults: function (data, params) {
+          params.page = params.page || 1;
+          return {
+            results: data.results || [],
+            pagination: { more: !!(data.pagination && data.pagination.more) },
+          };
+        },
+        cache: true,
+      },
     });
-    $select.html(html);
+
+    // select2:select selalu ter-trigger sebelum event "change" milik <select> asli,
+    // jadi data-code/itemunitid/unitname sudah tersedia saat handler "change" lain baca .data()
+    $select.on("select2:select", function (e) {
+      const data = e.params.data || {};
+      $(this)
+        .find("option:selected")
+        .attr("data-code", data.code || "")
+        .attr("data-itemunitid", data.itemunitid || "")
+        .attr("data-unitname", data.unitname || "");
+    });
+
+    if (defaultItem && defaultItem.id) {
+      const opt = new Option(defaultItem.text, defaultItem.id, true, true);
+      $(opt)
+        .attr("data-code", defaultItem.code || "")
+        .attr("data-itemunitid", defaultItem.itemunitid || "")
+        .attr("data-unitname", defaultItem.unitname || "");
+      $select.append(opt).trigger("change");
+    }
   }
   function loadColorOptions() {
     return $.ajax({
@@ -317,7 +325,6 @@ $(function () {
     })
       .done(function (data) {
         colorData = Array.isArray(data) ? data : [];
-        // console.log(`Color data stored in memory. Total: ${colorData.length}`);
 
         // Build HTML-nya sekali
         colorOptionsHTML = '<option value="">-- Pilih Warna --</option>';
@@ -345,16 +352,12 @@ $(function () {
     $select.html(html);
   }
   function loadShipmentYears() {
-    // console.log("=== loadShipmentYears() CALLED ===");
-
     return $.ajax({
       url: base_url + "purchasing/purchase_order_plan/get_calendar_years",
       type: "GET",
       dataType: "json",
     })
       .done(function (res) {
-        // console.log("Response get_calendar_years:", res);
-
         yearData = Array.isArray(res) ? res : [];
 
         yearData.sort((a, b) => {
@@ -369,8 +372,6 @@ $(function () {
         yearOptionsHTML = '<option value="">-- Pilih Tahun --</option>';
 
         yearData.forEach((r, idx) => {
-          // console.log(`Year row ${idx}:`, r);
-
           if (!r.CY) return;
 
           // ambil 4 digit terakhir → 2025
@@ -381,8 +382,6 @@ $(function () {
       ${yearNum}
     </option>`;
         });
-
-        // console.log("Year options HTML built");
       })
       .fail(function (xhr, status, error) {
         console.error("AJAX get_calendar_years FAILED", {
@@ -394,11 +393,7 @@ $(function () {
   }
 
   function renderYearDropdown($select) {
-    // console.log("renderYearDropdown() called");
-    // console.log("Using cached yearOptionsHTML:", yearOptionsHTML);
-
     if (!yearOptionsHTML) {
-      // console.warn("yearOptionsHTML masih kosong");
       return;
     }
 
@@ -407,18 +402,10 @@ $(function () {
     if ($select.hasClass("selectpicker")) {
       $select.selectpicker("refresh");
     }
-
-    // console.log(
-    //   "Year dropdown rendered, option count:",
-    //   $select.find("option").length,
-    // );
   }
   function loadWWByYear(year) {
-    // console.log("=== loadWWByYear CALLED ===", year);
-
     // kalau sudah pernah load, jangan AJAX lagi
     if (wwOptionsHTMLByYear[year]) {
-      // console.log("WW options already cached for year:", year);
       return $.Deferred().resolve().promise();
     }
 
@@ -431,8 +418,6 @@ $(function () {
       },
     })
       .done(function (res) {
-        // console.log(`Response get_ww_by_year (${year}):`, res);
-
         const wwData = Array.isArray(res) ? res : [];
         wwDataByYear[year] = wwData;
 
@@ -440,8 +425,6 @@ $(function () {
         let html = '<option value="">-- Pilih WW --</option>';
 
         wwData.forEach((r, idx) => {
-          // console.log(`WW row ${idx}:`, r);
-
           if (!r.WW) return;
 
           html += `
@@ -451,7 +434,6 @@ $(function () {
         });
 
         wwOptionsHTMLByYear[year] = html;
-        // console.log("WW options HTML built for year:", year);
       })
       .fail(function (xhr, status, error) {
         console.error("AJAX get_ww_by_year FAILED", {
@@ -464,10 +446,7 @@ $(function () {
   }
 
   function renderWWDropdown($select, year) {
-    // console.log("renderWWDropdown() called for year:", year);
-
     if (!year || !wwOptionsHTMLByYear[year]) {
-      // console.warn("WW options not ready for year:", year);
       $select.html('<option value="">-- Pilih WW --</option>');
 
       if ($select.hasClass("selectpicker")) {
@@ -481,11 +460,6 @@ $(function () {
     if ($select.hasClass("selectpicker")) {
       $select.selectpicker("refresh");
     }
-
-    // console.log(
-    //   "WW dropdown rendered, option count:",
-    //   $select.find("option").length
-    // );
   }
 
   $(document).on("change", ".blanket-est-input", function () {
@@ -512,19 +486,8 @@ $(function () {
       shipmentDateKey = secondPart;
     }
 
-    // console.log("=== DEBUG BLANKET EST VALIDATION ===");
-    // console.log("rowId:", rowId);
-    // console.log("vendorId:", vendorId);
-    // console.log("secondPart:", secondPart);
-    // console.log("batch:", batch);
-    // console.log("shipmentDateKey:", shipmentDateKey);
-    // console.log("groupKey:", groupKey);
-
     if (aggregatedSummary[vendorId] && aggregatedSummary[vendorId][groupKey]) {
       aggregatedSummary[vendorId][groupKey].blanketEst = newVal;
-      // console.log(
-      //   ` Saved newVal to aggregatedSummary BEFORE validation: ${newVal}`,
-      // );
     }
 
     // === VALIDASI: Cari PO Date Est paling awal untuk vendor ini ===
@@ -553,10 +516,6 @@ $(function () {
         }
       }
 
-      // console.log(
-      //   `Row check - rVendor:${rVendor}, rBatch:${rBatch}, rShipmentDate:${rShipmentDate}, rPoDateEst:${rPoDateEst}, isMatch:${isMatch}`,
-      // );
-
       if (isMatch && rPoDateEst) {
         matchedRows.push({ rVendor, rBatch, rShipmentDate, rPoDateEst });
         const poDate = new Date(rPoDateEst);
@@ -565,11 +524,6 @@ $(function () {
         }
       }
     });
-
-    // console.log("matchedRows:", matchedRows);
-    // console.log("earliestPoDateEst:", earliestPoDateEst);
-    // console.log("newVal (blanket est input):", newVal);
-    // console.log("=== END DEBUG ===");
 
     // === VALIDASI: Blanket Est tidak boleh lebih dari PO Date Est ===
     if (earliestPoDateEst && newVal) {
@@ -593,9 +547,6 @@ $(function () {
           aggregatedSummary[vendorId][groupKey]
         ) {
           aggregatedSummary[vendorId][groupKey].blanketEst = earliestDateStr;
-          // console.log(
-          //   `✓ Updated aggregatedSummary to correct value: ${earliestDateStr}`,
-          // );
         }
 
         // Update kumpulanDataTableKiriKanan berdasarkan vendorId + batch/shipmentDate match
@@ -613,12 +564,9 @@ $(function () {
         });
         if (targetObj) {
           targetObj.blanketEst = earliestDateStr;
-          // console.log(
-          //   `✓ Updated kumpulanDataTableKiriKanan.blanketEst to: ${earliestDateStr}`,
-          // );
         } else {
           console.warn(
-            `✗ targetObj not found in kumpulanDataTableKiriKanan for vendorId:${vendorId}, batch:${batch}, shipmentDate:${shipmentDateKey}`,
+            `targetObj not found in kumpulanDataTableKiriKanan for vendorId:${vendorId}, batch:${batch}, shipmentDate:${shipmentDateKey}`,
           );
         }
 
@@ -645,12 +593,9 @@ $(function () {
     });
     if (targetObj) {
       targetObj.blanketEst = newVal;
-      // console.log(
-      //   `✓ Updated kumpulanDataTableKiriKanan.blanketEst to: ${newVal}`,
-      // );
     } else {
       console.warn(
-        `✗ targetObj not found in kumpulanDataTableKiriKanan for vendorId:${vendorId}, batch:${batch}, shipmentDate:${shipmentDateKey}`,
+        `targetObj not found in kumpulanDataTableKiriKanan for vendorId:${vendorId}, batch:${batch}, shipmentDate:${shipmentDateKey}`,
       );
     }
 
@@ -726,23 +671,14 @@ $(function () {
         };
 
         if (preservedBlanketEst) {
-          // console.log(
-          //   ` PRESERVED blanketEst for ${vendorId}-${groupKey}: ${preservedBlanketEst}`,
-          // );
         } else if (blanketEstFromData) {
-          // console.log(
-          //   ` FOUND blanketEst from data for ${vendorId}-${groupKey}: ${blanketEstFromData}`,
-          // );
         } else {
-          // console.log(` NO blanketEst found for ${vendorId}-${groupKey}`);
         }
       }
 
       aggregatedSummary[vendorId][groupKey].total += subtotal;
       totalOverallSum += subtotal;
     });
-
-    // console.log("Aggregated Summary:", aggregatedSummary);
 
     //Update kumpulanDataTableKiriKanan dengan data terpilih
     updateKumpulanDataTableKiriKanan();
@@ -804,7 +740,6 @@ $(function () {
 
       $tableBody.html(rowsHtml);
       jumlahRowTableKiri = rowCount;
-      // console.log(` Table Kiri rendered with ${rowCount} rows`);
     } else {
       $tableBody.html(
         '<tr><td colspan="4" class="text-center">Tidak ada data ditemukan.</td></tr>',
@@ -847,9 +782,6 @@ $(function () {
           item.paymentDate &&
           item.paymentDate.length > 0
         ) {
-          // console.log(
-          //   `   MERGING payment data for duplicate key "${key}" from duplicate item`,
-          // );
           existing.paymentDate = item.paymentDate;
           existing.notes = item.notes;
           existing.percent = item.percent;
@@ -876,7 +808,6 @@ $(function () {
 
         // **SKIP jika key ini sudah diproses (mencegah duplikat)**
         if (processedKeys.has(key)) {
-          // console.log(`Skipping duplicate key: ${key}`);
           return;
         }
         processedKeys.add(key);
@@ -907,12 +838,6 @@ $(function () {
           // **PENTING: Ambil blanketEst dari aggregatedSummary ATAU dari existingBlanketEst jika ada**
           // Prioritas: groupData.blanketEst > existingBlanketEst > ""
           obj.blanketEst = groupData.blanketEst || existingBlanketEst || "";
-
-          // console.log(`Created new obj for key ${key}:`, {
-          //   blanketEst: obj.blanketEst,
-          //   fromAggregated: groupData.blanketEst,
-          //   fromExisting: existingBlanketEst,
-          // });
         } else {
           // **JIKA ADA EXISTING OBJECT, PRESERVE SEMUA FIELD YANG SUDAH ADA**
           // Update hanya vendorId, batch, namaVendor, rowId (jika ada perubahan key)
@@ -970,14 +895,6 @@ $(function () {
         parseInt(item.vendorId) === numericVendorId &&
         parseInt(item.batch) === numericBatch;
     });
-
-    // console.log("Current selection updated:", {
-    //   vendorId: vendorId,
-    //   batch: batch,
-    //   totalAmount: totalAmount,
-    //   blanketEstDate: blanketEstDate,
-    //   vendorName: vendorName,
-    // });
   }
   var focusIndexClass = 0;
 
@@ -1025,17 +942,6 @@ $(function () {
 
     const rowId = rowIdAttr || computedRowId;
 
-    // console.log("Button clicked with data:", {
-    //   rowId,
-    //   vendorId,
-    //   vendorName,
-    //   batch,
-    //   shipmentDate,
-    //   blanketEstDate,
-    //   buttonElement: this,
-    // });
-    // console.log("Searching for rowId:", rowId);
-
     if (rowId) {
       focusedObject = kumpulanDataTableKiriKanan.find(
         (r) => String(r.rowId) === String(rowId),
@@ -1077,10 +983,6 @@ $(function () {
       };
       kumpulanDataTableKiriKanan.push(newRow);
       focusedObject = newRow;
-      // console.log(
-      //   "Created new focusedObject because none existed:",
-      //   focusedObject,
-      // );
       // Update left-table button attribute
       $(this).attr("data-rowid", focusedObject.rowId);
     }
@@ -1121,10 +1023,6 @@ $(function () {
       focusedObject.blanketEst = blanketEstDate;
     }
 
-    // console.log(
-    //   "Final shipmentDate to viewDetailLoad:",
-    //   focusedObject.shipmentDate,
-    // );
     viewDetailLoad({
       rowId: focusedObject.rowId,
       vendorId: Number(focusedObject.vendorId),
@@ -1153,23 +1051,6 @@ $(function () {
     const shipmentDateStr = shipmentDate || "";
     const blanketEstDateStr = blanketEstDate || "";
     currentDisplayedShipmentDate = shipmentDateStr;
-    // console.log(
-    //   ">>> search viewDetailLoad with VendorID",
-    //   numericVendorId,
-    //   "Batch",
-    //   numericBatch,
-    //   "ShipmentDate",
-    //   shipmentDateStr,
-    //   "BlanketEstDate",
-    //   blanketEstDateStr || "",
-    //   "rowId",
-    //   rowId,
-    // );
-    // console.log("viewDetailLoad params:", params);
-    // console.log(
-    //   " currentDisplayedShipmentDate disimpan:",
-    //   currentDisplayedShipmentDate,
-    // );
 
     let titleText = vendorName;
     if (numericBatch > 0) {
@@ -1202,7 +1083,6 @@ $(function () {
       });
     }
 
-    // console.log("focusedObject found:", focusedObject);
     if (!focusedObject) {
       console.error(
         "focusedObject is null/undefined for VendorID:",
@@ -1216,10 +1096,6 @@ $(function () {
         "rowId",
         rowId,
       );
-      // console.log(
-      //   "Current kumpulanDataTableKiriKanan:",
-      //   kumpulanDataTableKiriKanan,
-      // );
       return;
     }
 
@@ -1245,14 +1121,6 @@ $(function () {
       });
 
       if (vendorSibling) {
-        // console.log(
-        //   " FOUND SIBLING with payment data, copying to current entry:",
-        //   vendorSibling,
-        // );
-        // console.log(
-        //   `  Sibling rowId: ${vendorSibling.rowId}, Current rowId: ${focusedObject.rowId}`,
-        // );
-
         const preservedShipmentDate = focusedObject.shipmentDate;
         focusedObject.notes = [...vendorSibling.notes];
         focusedObject.percent = [...vendorSibling.percent];
@@ -1266,24 +1134,10 @@ $(function () {
           baseDate.setDate(baseDate.getDate() + parseInt(term || 0));
           return baseDate.toISOString().split("T")[0];
         });
-        // console.log(` Payment data COPIED to current entry`);
-        // console.log(`ShipmentDate still maintained: ${preservedShipmentDate}`);
       } else {
-        // console.log(
-        //   " NO SIBLING FOUND with payment data for vendorId:",
-        //   numericVendorId,
-        // );
-        // console.log(
-        //   "  Current entries in kumpulanDataTableKiriKanan:",
-        //   kumpulanDataTableKiriKanan,
-        // );
       }
     }
     if (!focusedObject.paymentDate || focusedObject.paymentDate.length === 0) {
-      // console.log(
-      //   "No payment date data found in focusedObject:",
-      //   focusedObject,
-      // );
       focusedObject.paymentDate = [""];
       focusedObject.notes = [""];
       focusedObject.percent = [""];
@@ -1356,10 +1210,6 @@ $(function () {
       );
       if (targetObject) {
         targetObject.paymentDate[rowIndex] = $(this).val();
-        // console.log(
-        //   `[Baris ${rowIndex + 1}] Payment Date changed to:`,
-        //   $(this).val(),
-        // );
       }
     });
 
@@ -1378,7 +1228,6 @@ $(function () {
       );
       if (targetObject) {
         targetObject.notes[rowIndex] = $(this).val();
-        // console.log(`[Baris ${rowIndex + 1}] Notes changed to:`, $(this).val());
       }
     });
 
@@ -1397,10 +1246,6 @@ $(function () {
       );
       if (targetObject) {
         targetObject.percent[rowIndex] = $(this).val();
-        // console.log(
-        //   `[Baris ${rowIndex + 1}] Percent changed to:`,
-        //   $(this).val(),
-        // );
       }
     });
 
@@ -1419,10 +1264,6 @@ $(function () {
       );
       if (targetObject) {
         targetObject.formValue[rowIndex] = parseInt($(this).val(), 10);
-        // console.log(
-        //   `[Baris ${rowIndex + 1}] Form Value changed to:`,
-        //   $(this).val(),
-        // );
       }
     });
 
@@ -1441,7 +1282,6 @@ $(function () {
       );
       if (targetObject) {
         targetObject.alert[rowIndex] = parseInt($(this).val(), 10);
-        // console.log(`[Baris ${rowIndex + 1}] Alert changed to:`, $(this).val());
       }
     });
 
@@ -1460,10 +1300,6 @@ $(function () {
       );
       if (targetObject) {
         targetObject.termDays[rowIndex] = $(this).val();
-        // console.log(
-        //   `[Baris ${rowIndex + 1}] Term Days changed to:`,
-        //   $(this).val(),
-        // );
       }
     });
 
@@ -1482,25 +1318,14 @@ $(function () {
       );
       if (targetObject) {
         targetObject.OACredit[rowIndex] = $(this).val();
-        // console.log(
-        //   `[Baris ${rowIndex + 1}] OA Credit changed to:`,
-        //   $(this).val(),
-        // );
       }
     });
-
-    // console.log(
-    //   `Memuat ${focusedObject.paymentDate ? focusedObject.paymentDate.length : 0} baris untuk VendorID ${numericVendorId}, ${numericBatch > 0 ? "Batch " + numericBatch : "ShipmentDate " + shipmentDateStr}`,
-    // );
   }
   function renumberRows() {
     const rows = $("#tableTengah tr");
-    // console.log("=== Renumber Rows Dipanggil ===");
-    // console.log("Total row found:", rows.length);
 
     rows.each(function (index) {
       const rowId = $(this).data("rowid");
-      // console.log(`Row ke-${index + 1} | rowId:`, rowId);
 
       // update text nomor
       $(this)
@@ -1511,14 +1336,10 @@ $(function () {
       const rowData = allTableTengahData.find((item) => item.rowId === rowId);
       if (rowData) {
         rowData.no = index + 1;
-        // console.log(`→ Update array: rowId ${rowId}, no = ${index + 1}`);
       } else {
-        // console.log(` RowId ${rowId} not found at allTableTengahData`);
       }
     });
     activeRows = rows.length; //  simpan ke global
-    // console.log("Active rows now:", activeRows);
-    // console.log("=== End Renumber ===");
   }
 
   $(document).on("select2:open", function () {
@@ -1532,9 +1353,6 @@ $(function () {
   function addRowTableTengah(idTable) {
     rowCounter++;
     var tempRowId = "temp-" + rowCounter;
-
-    // console.log("addRowTableTengah called with idTable:", idTable);
-    // console.log("New tempRowId:", tempRowId);
 
     let defaultVendor = 0;
     if (
@@ -1565,24 +1383,15 @@ $(function () {
     const $tableTengahBody = $("#" + idTable);
     $tableTengahBody.append(newRowHtml);
     const $lastRow = $tableTengahBody.find("tr:last");
-    renderItemDropdown($lastRow.find(".item-code-field"));
-    renderVendorDropdown($lastRow.find(".vendorSelector"));
     renderColorDropdown($lastRow.find(".color-field"));
     renderYearDropdown($lastRow.find(".shipment-year-field"));
     renderWWDropdown($lastRow.find(".ww-field"));
 
-    const $itemSelect = $lastRow.find(".item-code-field");
-    const $selectedOption = $itemSelect.find("option:selected");
+    // item baru selalu kosong di row baru, tidak ada default seperti vendor
+    const itemCodeText = "";
 
-    const itemId = parseInt($itemSelect.val(), 10) || 0;
-    const itemCodeText = $selectedOption.data("code") || "";
-
-    $lastRow.find(".item-code-field").html(itemOptionsHTML).select2({
-      placeholder: "-- Pilih Item --",
-    });
-    $lastRow.find(".vendorSelector").html(vendorOptionsHTML).select2({
-      placeholder: "-- Pilih Vendor --",
-    });
+    initItemSelect2($lastRow.find(".item-code-field"));
+    initVendorSelect2($lastRow.find(".vendorSelector"), defaultVendor);
     $lastRow.find(".color-field").html(colorOptionsHTML).select2({
       placeholder: "-- Pilih Warna --",
     });
@@ -1591,67 +1400,6 @@ $(function () {
     });
     $lastRow.find(".ww-field").html(wwOptionsHTMLByYear).select2({
       placeholder: "-- Pilih WW --",
-    });
-    if (defaultVendor) {
-      $lastRow.find(".vendorSelector").val(defaultVendor).trigger("change");
-    }
-
-    $lastRow.find(".color-field").select2({
-      placeholder: "-- Pilih Warna --",
-      // tags: true,
-      // createTag: function (params) {
-      //   const term = $.trim(params.term);
-      //   if (term === "") return null;
-      //   return {
-      //     id: "__new__" + term,
-      //     text: term,
-      //     newOption: true,
-      //   };
-      // },
-      // templateResult: function (data) {
-      //   if (data.newOption) {
-      //     return $("<span> + Add New: <b>" + data.text + "</b></span>");
-      //   }
-      //   return data.text;
-      // },
-    });
-
-    // Event ketika user memilih warna
-    $lastRow.find(".color-field").on("select2:select", function (e) {
-      const data = e.params.data;
-      // if (data.id.startsWith("__new__")) {
-      //   const newColor = data.text;
-      //   const confirmAdd = confirm(
-      //     `This color is not in the list.\nAre you sure you want to save "${newColor}"?`
-      //   );
-      //   if (!confirmAdd) {
-      //     $(this).val(null).trigger("change");
-      //     return;
-      //   }
-      //   $.ajax({
-      //     url: BASE_URL + "scm/purchasing/purchase_order_plan/add_new_color",
-      //     type: "POST",
-      //     data: { color_name: newColor },
-      //     dataType: "json",
-      //     success: function (res) {
-      //       if (res.success) {
-      //         const newOption = new Option(
-      //           res.data.AttributeValue,
-      //           res.data.AttributeValueID,
-      //           true,
-      //           true
-      //         );
-      //         $(".color-field").append(newOption).trigger("change");
-      //         console.log(" New color added:", res.data.AttributeValue);
-      //       } else {
-      //         alert("Failed to add new color!");
-      //       }
-      //     },
-      //     error: function () {
-      //       alert("An error occurred while saving the new color!");
-      //     },
-      //   });
-      // }
     });
 
     const newRowData = {
@@ -1682,30 +1430,15 @@ $(function () {
     allTableTengahData.push(newRowData);
     $lastRow.find(".column-no").text(allTableTengahData.length);
 
-    // console.log(
-    //   "%c[DEBUG] New Row Added to Table Tengah",
-    //   "color: green; font-size:14px;",
-    // );
-    // console.log(JSON.parse(JSON.stringify(newRowData)));
-
-    // console.log(
-    //   "%c[DEBUG] Current allTableTengahData:",
-    //   "color: blue; font-size:14px;",
-    // );
-    // console.log(allTableTengahData);
     renumberRows();
     updateTotalQty();
     updateTableKiriSummary();
   }
   function duplicateLastRowTableTengah(idTable) {
-    // console.log("=== duplicateLastRowTableTengah START (OPTIMIZED) ===");
-    // console.time("duplicateLastRowTableTengah");
-
     const $tableBody = $("#" + idTable);
     const $lastRow = $tableBody.find("tr:last");
 
     if ($lastRow.length === 0) {
-      // console.log("ERROR: No last row found");
       return;
     }
 
@@ -1713,15 +1446,12 @@ $(function () {
     const lastData = allTableTengahData[allTableTengahData.length - 1];
 
     if (!lastData) {
-      // console.log("ERROR: No last data in array");
       return;
     }
 
     // tambah row kosong baru
     addRowTableTengah(idTable);
     const $newRow = $tableBody.find("tr:last");
-
-    // console.log("New row created, populating with cached data");
 
     // 1. Item Code - perlu trigger untuk update unit field
     if (lastData.itemCode) {
@@ -1745,9 +1475,6 @@ $(function () {
     // Cek apakah WW options sudah ter-cache di wwDataByYear
     if (shipmentYear && wwDataByYear[shipmentYear]) {
       // WW sudah ter-cache, langsung populate dropdown dari cache
-      // console.log(
-      //   `[OPTIMIZATION] Using cached WW data for year ${shipmentYear}`,
-      // );
       renderWWDropdown($wwField, shipmentYear);
       // Langsung set WW value dengan trigger change
       $wwField.val(lastData.ww).trigger("change.select2");
@@ -1755,7 +1482,6 @@ $(function () {
       $newRow.find(".shipment-date-field").val(lastData.shipmentDate);
     } else if (shipmentYear) {
       // WW belum cache, load terlebih dahulu
-      // console.log(`[OPTIMIZATION] Loading WW data for year ${shipmentYear}`);
       loadWWByYear(shipmentYear).then(function () {
         renderWWDropdown($wwField, shipmentYear);
         $wwField.val(lastData.ww).trigger("change.select2");
@@ -1776,8 +1502,6 @@ $(function () {
     $newRow.find(".po-date-est-field").val(lastData.poDateEst);
     $newRow.find(".batch-field").val(lastData.batch);
 
-    // console.log("Field values set on new row (optimized)");
-
     // Clone data object untuk baris yang baru dibuat
     const newIndex = allTableTengahData.length - 1;
     const tempRowId = $newRow.data("rowid");
@@ -1790,20 +1514,12 @@ $(function () {
       // poDateEst: null,
     };
 
-    // console.log(
-    //   "New row added to allTableTengahData with tempRowId:",
-    //   tempRowId,
-    // );
-
     //  OPTIMIZATION: Batch update fungsi-fungsi update (defer jika perlu)
     // Tapi untuk accuracy, tetap lakukan semuanya
     updateTotalQty();
     updateTableKiriSummary();
     renumberRows();
     updateDuplicateButtonVisibility();
-
-    // console.timeEnd("duplicateLastRowTableTengah");
-    // console.log("=== duplicateLastRowTableTengah END (OPTIMIZED) ===");
   }
 
   function addNewColorOption(inputEl) {
@@ -1856,10 +1572,6 @@ $(function () {
           // Auto-increment batch
           batch = highestBatchOverall + 1;
           $row.find(".batch-field").val(batch);
-
-          // console.log(
-          //   ` AUTO-INCREMENT BATCH (via generic handler): Vendor ${oldVendorId} → ${vendorId}, Batch: ${batch}`,
-          // );
         }
       }
 
@@ -1938,10 +1650,6 @@ $(function () {
           if (!existingKiriData.blanketEst && savedBlanketEst) {
             existingKiriData.blanketEst = savedBlanketEst;
           }
-
-          // console.log("Updated kumpulanDataTableKiriKanan rowId:", newRowId, {
-          //   blanketEst: existingKiriData.blanketEst,
-          // });
         } else {
           // **JIKA TIDAK DITEMUKAN, BUAT DATA BARU TAPI PAKAI SAVED blanketEst**
 
@@ -1959,9 +1667,6 @@ $(function () {
             );
             if (oldVendorEntry && oldVendorEntry.blanketEst) {
               blanketEstToCopy = oldVendorEntry.blanketEst;
-              // console.log(
-              //   ` COPY blanketEst dari vendor ${oldVendorId}: ${blanketEstToCopy}`,
-              // );
             }
           }
 
@@ -1975,10 +1680,6 @@ $(function () {
             total: 0,
           };
           kumpulanDataTableKiriKanan.push(newKiriData);
-          // console.log(
-          //   "Created new kumpulanDataTableKiriKanan entry:",
-          //   newKiriData,
-          // );
         }
 
         lastSelectedRowId = newRowId;
@@ -2001,7 +1702,7 @@ $(function () {
       parseInt($selectElement.find(":selected").data("itemunitid"), 10) || 0;
     const unitName = $selectElement.find(":selected").data("unitname") || "";
     const selectedText = $selectElement.find("option:selected").text();
-    const itemCodeText = $selectedOption.data("code") || ""; // 🔥 INI
+    const itemCodeText = $selectedOption.data("code") || "";
 
     // update ke array menggunakan rowId
     let rowData = null;
@@ -2024,14 +1725,6 @@ $(function () {
 
     // update field readonly di kolom unit
     $currentRow.find(".item-unit-field").val(unitName);
-
-    // console.log("Item ID terpilih untuk rowId " + rowId + ": " + selectedId);
-    // console.log(
-    //   "Item Code/Teks terpilih untuk rowId " + rowId + ": " + selectedText,
-    // );
-    // console.log("Unit ID:", itemUnitId);
-    // console.log("Unit Text:", itemCodeText);
-    // console.log("Unit Name:", unitName);
 
     // Update visibility button duplicate setelah item berubah
     updateDuplicateButtonVisibility();
@@ -2064,11 +1757,6 @@ $(function () {
       vendorValidations: [], // Array untuk hasil validasi per vendor
     };
 
-    // console.log(
-    //   "Total vendors/items in kumpulanDataTableKiriKanan:",
-    //   kumpulanDataTableKiriKanan.length,
-    // );
-
     // CHECK: Apakah ada payment data yang BENAR-BENAR TERISI (bukan hanya array kosong/undefined)?
     const hasAnyPaymentData = kumpulanDataTableKiriKanan.some((item) => {
       if (!Array.isArray(item.paymentDate) || item.paymentDate.length === 0) {
@@ -2097,8 +1785,6 @@ $(function () {
     });
 
     if (!hasAnyPaymentData) {
-      // console.log("No valid payment data found - skipping validation");
-      // console.log("Payment is optional - validation PASSED");
       return validationResult; // Return valid karena payment optional
     }
 
@@ -2117,9 +1803,6 @@ $(function () {
         !Array.isArray(item.paymentDate) ||
         item.paymentDate.length === 0
       ) {
-        // console.log(
-        //   `Skipping vendor ${item.namaVendor} - no payment data (optional)`,
-        // );
         return; // Skip ke vendor berikutnya
       }
 
@@ -2132,10 +1815,6 @@ $(function () {
         totalPercent: 0,
         rowCount: 0,
       };
-
-      // console.log(
-      //   `\nValidating vendor: ${item.namaVendor} (ID: ${item.vendorId}, Row: ${item.rowId})`,
-      // );
 
       // Cek apakah item memiliki array data payment
       if (!item.percent || !Array.isArray(item.percent)) {
@@ -2153,22 +1832,17 @@ $(function () {
       const percentLength = item.percent.length;
       vendorValidation.rowCount = percentLength;
 
-      // console.log(`  Total payment rows: ${percentLength}`);
-
       // Looping setiap baris payment dalam item ini
       item.percent.forEach((percentVal, paymentIndex) => {
         const rowNumber = paymentIndex + 1;
         let isRowValid = true;
         let emptyFields = [];
 
-        // console.log(`  Row ${rowNumber}:`);
-
         // Validasi Notes
         const notes =
           item.notes && item.notes[paymentIndex]
             ? item.notes[paymentIndex]
             : "";
-        // console.log(`    Notes: "${notes}"`);
         if (!notes || notes.trim() === "") {
           emptyFields.push("Notes");
           isRowValid = false;
@@ -2176,7 +1850,6 @@ $(function () {
 
         // Validasi Percent
         const percentValue = percentVal;
-        // console.log(`    Percent: "${percentValue}"`);
         if (
           percentValue === "" ||
           percentValue === null ||
@@ -2199,15 +1872,11 @@ $(function () {
             isRowValid = false;
           } else {
             totalPercent += percent;
-            // console.log(
-            //   `    Adding ${percent}% to total. Current total: ${totalPercent}%`,
-            // );
           }
         }
 
         // Validasi Form Value
         const formValue = item.formValue && item.formValue[paymentIndex];
-        // console.log(`    Form Value: "${formValue}"`);
         if (!formValue) {
           emptyFields.push("Form Value");
           isRowValid = false;
@@ -2215,7 +1884,6 @@ $(function () {
 
         // Validasi Alert
         const alertValue = item.alert && item.alert[paymentIndex];
-        // console.log(`    Alert: "${alertValue}"`);
         if (!alertValue) {
           emptyFields.push("Alert");
           isRowValid = false;
@@ -2223,7 +1891,6 @@ $(function () {
 
         // Validasi Term Days
         const termDays = item.termDays && item.termDays[paymentIndex];
-        // console.log(`    Term Days: "${termDays}"`);
         if (!termDays || termDays === "" || isNaN(parseInt(termDays))) {
           emptyFields.push("Term Days");
           isRowValid = false;
@@ -2231,7 +1898,6 @@ $(function () {
 
         // Validasi OA Credit (optional)
         const oaCredit = item.OACredit && item.OACredit[paymentIndex];
-        // console.log(`    OA Credit: "${oaCredit}"`);
 
         if (oaCredit && oaCredit.trim && oaCredit.trim() !== "") {
           const oaCreditVal = parseFloat(oaCredit);
@@ -2260,12 +1926,9 @@ $(function () {
         } else {
           hasValidRows = true;
         }
-
-        // console.log(`    Row ${rowNumber} valid: ${isRowValid}`);
       });
 
       vendorValidation.totalPercent = Math.round(totalPercent * 100) / 100;
-      // console.log(`  Final total percent: ${vendorValidation.totalPercent}%`);
 
       // Validasi total percent harus 100%
       if (hasValidRows) {
@@ -2291,7 +1954,6 @@ $(function () {
             );
           }
         } else {
-          // console.log(`  Total percent validation PASSED (100%)`);
         }
       }
 
@@ -2309,10 +1971,6 @@ $(function () {
       }
     });
 
-    // console.log("Is Valid:", validationResult.isValid);
-    // console.log("Messages:", validationResult.messages);
-    // console.log("Validation Result:", validationResult);
-
     return validationResult;
   }
 
@@ -2327,8 +1985,6 @@ $(function () {
 
     const $tableRows = $("#tableKanan tr").not(".no-data-row-kanan");
     validationResult.rowCount = $tableRows.length;
-
-    // console.log("Total rows found:", $tableRows.length);
 
     if ($tableRows.length === 0) {
       validationResult.isValid = false;
@@ -2345,24 +2001,15 @@ $(function () {
       let isRowValid = true;
       let emptyFields = [];
 
-      // console.log(`Validating row ${rowNumber}:`);
-
       const paymentDate = $row.find(".paymentDateTableKanan").val();
-      // console.log(`  Payment Date: "${paymentDate}"`);
-      // if (!paymentDate || paymentDate.trim() === "") {
-      //   emptyFields.push("Payment Date");
-      //   isRowValid = false;
-      // }
 
       const notes = $row.find(".notesTableKanan").val();
-      // console.log(`  Notes: "${notes}"`);
       if (!notes || notes.trim() === "") {
         emptyFields.push("Notes");
         isRowValid = false;
       }
 
       const percentValue = $row.find(".percenTableKanan").val();
-      // console.log(`  Percent Value: "${percentValue}"`);
       if (
         !percentValue ||
         percentValue.trim() === "" ||
@@ -2384,33 +2031,26 @@ $(function () {
           isRowValid = false;
         } else {
           totalPercent += percent;
-          // console.log(
-          //   `  Adding ${percent}% to total. Current total: ${totalPercent}%`,
-          // );
         }
       }
 
       const formValue = $row.find(".formValueTableKanan").val();
-      // console.log(`  Form Value: "${formValue}"`);
       if (!formValue) {
         emptyFields.push("Form Value");
         isRowValid = false;
       }
 
       const alertValue = $row.find(".alertTableKanan").val();
-      // console.log(`  Alert: "${alertValue}"`);
       if (!alertValue) {
         emptyFields.push("Alert");
         isRowValid = false;
       }
       const termDays = $row.find(".termDaysTableKanan").val();
-      // console.log(`  Term Days: "${termDays}"`);
       if (!termDays || termDays.trim() === "" || isNaN(parseInt(termDays))) {
         emptyFields.push("Term Days");
         isRowValid = false;
       }
       const oaCredit = $row.find(".OACreditTableKanan").val();
-      // console.log(`  OA Credit: "${oaCredit}"`);
 
       if (oaCredit && oaCredit.trim() !== "") {
         const oaCreditVal = parseFloat(oaCredit);
@@ -2442,12 +2082,9 @@ $(function () {
       } else {
         hasValidRows = true;
       }
-
-      // console.log(`  Row ${rowNumber} valid: ${isRowValid}`);
     });
 
     validationResult.totalPercent = Math.round(totalPercent * 100) / 100;
-    // console.log(`Final total percent: ${validationResult.totalPercent}%`);
 
     if (hasValidRows) {
       const tolerance = 0.01;
@@ -2472,12 +2109,8 @@ $(function () {
           );
         }
       } else {
-        // console.log(" Total percent validation PASSED (100%)");
       }
     }
-
-    // console.log("Is Valid:", validationResult.isValid);
-    // console.log("Messages:", validationResult.messages);
 
     return validationResult;
   }
@@ -2507,13 +2140,10 @@ $(function () {
         rowData.push(rowObject);
       });
 
-    // console.log("Valid table kanan data:", rowData);
     return rowData;
   }
 
   function saveTableKanan(purchasePlanID, vendorId, batch) {
-    // console.log("Parameters:", { purchasePlanID, vendorId, batch });
-
     if (!purchasePlanID || purchasePlanID <= 0) {
       alert("Error: Purchase Plan ID is required!");
       return;
@@ -2569,8 +2199,6 @@ $(function () {
       oaCredit: row.OACredit,
     }));
 
-    // console.log("Formatted data for server:", formattedData);
-
     $.ajax({
       url: BASE_URL + "scm/purchasing/purchase_order_plan/saveTableKanan",
       type: "POST",
@@ -2587,12 +2215,8 @@ $(function () {
       }),
       dataType: "json",
       timeout: 30000,
-      beforeSend: function () {
-        // console.log(" Sending table kanan data to server...");
-      },
+      beforeSend: function () {},
       success: function (response) {
-        // console.log(" Server response:", response);
-
         if (response.status === "success") {
           const successMessage =
             "SUCCESS!\n\n" +
@@ -2847,10 +2471,6 @@ $(function () {
       .removeClass("alert-info alert-success alert-warning alert-danger")
       .addClass(`alert-${statusClass}`)
       .html(statusHTML);
-
-    // console.log(
-    //   `Percent Status Update: ${totalPercent}% (${validRows} valid rows, ${emptyRows} empty rows)`,
-    // );
   }
 
   $(document)
@@ -2884,7 +2504,6 @@ $(function () {
     const $currentRow = $(this).closest("tr");
     const rowIndex = $currentRow.index();
     const selectedNote = String($(this).val());
-    // console.log(`[Baris ${rowIndex + 1}] Notes changed to: ${selectedNote}`);
     isCalculatePaymentClicked = false; // Reset flag karena ada perubahan di table kanan
     refreshObjectTableKiri(currentActiveRowId);
   });
@@ -2893,7 +2512,6 @@ $(function () {
     const $currentRow = $(this).closest("tr");
     const rowIndex = $currentRow.index();
     const newValue = parseFloat($(this).val()) || 0;
-    // console.log(`[Baris ${rowIndex + 1}] Percent changed to: ${newValue}`);
     isCalculatePaymentClicked = false; // Reset flag karena ada perubahan di table kanan
     refreshObjectTableKiri(currentActiveRowId);
   }); // Event handler untuk kolom 'formValue' (select)
@@ -2902,7 +2520,6 @@ $(function () {
     const $currentRow = $(this).closest("tr");
     const rowIndex = $currentRow.index();
     const newValue = parseInt($(this).val()); // int
-    // console.log(`[Baris ${rowIndex + 1}] Form Value changed to: ${newValue}`);
     isCalculatePaymentClicked = false; // Reset flag karena ada perubahan di table kanan
     refreshObjectTableKiri(currentActiveRowId);
   }); // Event handler untuk kolom 'alert' (select)
@@ -2933,16 +2550,12 @@ $(function () {
     isCalculatePaymentClicked = false; // Reset flag karena ada perubahan di table kanan
 
     // console.groupCollapsed(` [TermDays Handler] Row ${rowIndex + 1}`);
-    // console.log("Input termDays:", termDays);
 
     //  Sinkronkan row aktif dulu
     const $activeButton = $(".view-summary-details-btn[data-active='true']");
     if ($activeButton.length) {
       const activeRowId = $activeButton.attr("data-rowid");
       if (activeRowId && activeRowId !== currentActiveRowId) {
-        // console.log(
-        //   ` Menyinkronkan currentActiveRowId di TermDaysHandler: ${currentActiveRowId} → ${activeRowId}`,
-        // );
         currentActiveRowId = activeRowId;
       }
     }
@@ -2950,10 +2563,6 @@ $(function () {
 
     if (currentDisplayedShipmentDate) {
       shipmentDateStr = currentDisplayedShipmentDate;
-      // console.log(
-      //   " ShipmentDate dari currentDisplayedShipmentDate (PALING AKURAT):",
-      //   shipmentDateStr,
-      // );
     } else {
       const activeObject = window.kumpulanDataTableKiriKanan?.find(
         (g) =>
@@ -2963,10 +2572,6 @@ $(function () {
 
       if (activeObject && activeObject.shipmentDate) {
         shipmentDateStr = activeObject.shipmentDate;
-        // console.log(
-        //   " ShipmentDate langsung dari activeObject:",
-        //   shipmentDateStr,
-        // );
       } else {
         const currentBatch = getCurrentBatchFromTitle();
         const currentShipmentFromTitle = getCurrentShipmentDateFromTitle();
@@ -2985,19 +2590,13 @@ $(function () {
 
         if (activeGroup) {
           shipmentDateStr = activeGroup.shipmentDate;
-          // console.log(" ShipmentDate fallback dari group:", shipmentDateStr);
         } else if (allTableTengahData?.[focusIndexClass]) {
           shipmentDateStr = allTableTengahData[focusIndexClass].shipmentDate;
-          // console.log(
-          //   " Fallback terakhir dari focusIndexClass:",
-          //   shipmentDateStr,
-          // );
         }
       }
     }
 
     if (shipmentDateStr) {
-      // console.log(" Calculate Payment Date from :", shipmentDateStr);
       let shipmentDate = new Date(shipmentDateStr);
       let paymentDate = new Date(shipmentDate);
       paymentDate.setDate(paymentDate.getDate() + termDays);
@@ -3021,7 +2620,6 @@ $(function () {
       }
 
       const paymentDateStr = paymentDate.toISOString().split("T")[0];
-      // console.log(" New PaymentDate:", paymentDateStr);
       $currentRow.find(".paymentDateTableKanan").val(paymentDateStr);
     } else {
       console.warn(
@@ -3029,7 +2627,6 @@ $(function () {
       );
     }
 
-    // console.log(`[Line ${rowIndex + 1}] Term Days changed to: ${termDays}`);
     // console.groupEnd();
 
     refreshObjectTableKiri(currentActiveRowId);
@@ -3093,9 +2690,6 @@ $(function () {
       if (eventType === "change") {
         const $currentRow = $input.closest("tr");
         const rowIndex = $currentRow.index();
-        console.log(
-          `[Liner ${rowIndex + 1}] OA Credit changed to: ${numericValue}%`,
-        );
       }
       return;
     }
@@ -3105,17 +2699,10 @@ $(function () {
     const effectiveRowId =
       targetRowId || currentActiveRowId || lastSelectedRowId || "kiri-summary";
 
-    // console.log(
-    //   ` refreshObjectTableKiri called with: ${targetRowId}, using: ${effectiveRowId}`,
-    // );
-
     const $activeButton = $(".view-summary-details-btn[data-active='true']");
     if ($activeButton.length) {
       const activeRowId = $activeButton.attr("data-rowid");
       if (activeRowId && activeRowId !== currentActiveRowId) {
-        // console.log(
-        //   ` Syncronized currentActiveRowId from active button: ${currentActiveRowId} → ${activeRowId}`,
-        // );
         currentActiveRowId = activeRowId;
       }
     }
@@ -3152,15 +2739,11 @@ $(function () {
       }
     }
 
-    // console.log(` Updating payment data for active rowId: ${effectiveRowId}`);
-
     const isCurrentlyViewingThisRow =
       lastSelectedRowId === effectiveRowId ||
       currentActiveRowId === effectiveRowId;
 
     if (isCurrentlyViewingThisRow) {
-      // console.log(` Updating payment data for active rowId: ${effectiveRowId}`);
-
       targetObject.paymentDate = [];
       targetObject.notes = [];
       targetObject.percent = [];
@@ -3195,15 +2778,7 @@ $(function () {
         let oaCreditClean = oaCreditRaw.replace(/[,\s]/g, "");
         targetObject.OACredit.push(parseFloat(oaCreditClean) || 0);
       });
-
-      // console.log(" Objek kiri diperbarui dari tabel kanan:", targetObject);
     } else {
-      // console.log(
-      //   ` Skipping payment update for ${effectiveRowId} - not currently active`,
-      // );
-      // console.log(
-      //   `   Currently active: ${lastSelectedRowId || currentActiveRowId}`,
-      // );
     }
   }
   function formatDate(dateStr) {
@@ -3362,7 +2937,6 @@ $(function () {
       }
     }
 
-    // console.log(" Hasil kalkulasi:", resultRows);
     renderTableKananCalc(resultRows);
     const existingIndex = globalCalcCache.findIndex(
       (r) => String(r.rowId) === String(targetRowId),
@@ -3379,8 +2953,6 @@ $(function () {
         calcResult: resultRows,
       });
     }
-
-    // console.log(" globalCalcCache AFTER generate:", globalCalcCache);
   }
 
   function savePaymentCalcData(
@@ -3390,15 +2962,8 @@ $(function () {
     arrListIDTableKiri,
     onDone,
   ) {
-    // console.log("=== DEBUG savePaymentCalcData ===");
-    // console.log("purchasePlanID:", purchasePlanID);
-    // console.log("targetRowId:", targetRowId);
-    // console.log("resultRows:", resultRows);
-    // console.log("arrListIDTableKiri:", arrListIDTableKiri);
-
     // Payment data is optional - allow saving even if resultRows is empty
     if (!Array.isArray(resultRows) || resultRows.length === 0) {
-      // console.log("No calc result data - payment is optional");
       if (typeof onDone === "function") onDone();
       return;
     }
@@ -3413,7 +2978,6 @@ $(function () {
 
     if (cacheRow && cacheRow.purchasePlanDtlID) {
       purchasePlanDtlID = cacheRow.purchasePlanDtlID;
-      // console.log("PurchasePlanDtlID dari cache:", purchasePlanDtlID);
     }
 
     // 2. Jika tidak ada di cache, cari dari kumpulanDataTableKiriKanan
@@ -3427,10 +2991,6 @@ $(function () {
       );
       if (kiriRow && kiriRow.purchasePlanDtlID) {
         purchasePlanDtlID = kiriRow.purchasePlanDtlID;
-        // console.log(
-        //   "PurchasePlanDtlID dari kumpulanDataTableKiriKanan:",
-        //   purchasePlanDtlID,
-        // );
       }
     }
 
@@ -3457,17 +3017,9 @@ $(function () {
 
       if (rowIndex !== -1 && arrListIDTableKiri[rowIndex]) {
         purchasePlanDtlID = arrListIDTableKiri[rowIndex];
-        // console.log(
-        //   "PurchasePlanDtlID dari arrListIDTableKiri[" + rowIndex + "]:",
-        //   purchasePlanDtlID,
-        // );
       } else {
         // Fallback ke ID pertama
         purchasePlanDtlID = arrListIDTableKiri[0];
-        // console.log(
-        //   "PurchasePlanDtlID fallback ke arrListIDTableKiri[0]:",
-        //   purchasePlanDtlID,
-        // );
       }
     }
 
@@ -3507,9 +3059,6 @@ $(function () {
     let jsonString = "";
     try {
       jsonString = JSON.stringify(payload, null, 2);
-
-      console.log("=== DEBUG PAYLOAD BEFORE SEND ===");
-      console.log(jsonString);
     } catch (err) {
       console.error("JSON encoding failed:", err);
       alert("JSON encoding failed!");
@@ -3528,14 +3077,9 @@ $(function () {
       data: jsonString,
       timeout: 30000,
 
-      beforeSend: function () {
-        // console.log("Mengirim kalkulasi ke server...");
-        // console.log("JSON size:", jsonString.length, "chars");
-      },
+      beforeSend: function () {},
 
       success: function (res) {
-        // console.log("Response save calc:", res);
-
         if (res && res.status === "success") {
           if (typeof onDone === "function") onDone();
         } else {
@@ -3665,15 +3209,7 @@ $(function () {
       const hasShipmentDate =
         lastRowData.shipmentDate && lastRowData.shipmentDate.trim() !== "";
 
-      console.log("Last row data validation:", {
-        qty: lastRowData.qty,
-        shipmentDate: lastRowData.shipmentDate,
-        hasQty: hasQty,
-        hasShipmentDate: hasShipmentDate,
-      });
-
       if (hasQty && hasShipmentDate) {
-        console.log("Data complete, reset activeRows");
         activeRows = 0;
       } else {
         alert("Please fill data in the current line before adding a new one!");
@@ -3753,17 +3289,11 @@ $(function () {
   }
 
   $("#duplicateLineTableTengah").click(function () {
-    // console.log("=== DUPLICATE BUTTON CLICKED ===");
-    // console.log("allTableTengahData length:", allTableTengahData.length);
-    // console.log("allTableTengahData content:", allTableTengahData);
-
     // Payment is now optional, so no validation needed
 
     const $lastRow = $("#tableTengah tr").last();
-    // console.log("Last row found in DOM:", $lastRow.length > 0);
 
     if ($lastRow.length === 0) {
-      // console.log("ERROR: No row found in DOM");
       alert("No data to duplicate.");
       return;
     }
@@ -3778,17 +3308,6 @@ $(function () {
     const qty = $lastRow.find(".qty-field").val();
     const price = $lastRow.find(".price-field").val();
 
-    // console.log("Form field values from DOM:", {
-    //   itemCode: itemCode,
-    //   vendor: vendor,
-    //   color: color,
-    //   shipmentYear: shipmentYear,
-    //   ww: ww,
-    //   shipmentDate: shipmentDate,
-    //   qty: qty,
-    //   price: price,
-    // });
-
     if (
       !vendor ||
       !color ||
@@ -3801,12 +3320,10 @@ $(function () {
       // !price ||
       // price == 0
     ) {
-      // console.log("VALIDATION FAILED: Missing required fields");
       alert("Please fill all fields in the current line before duplicating!");
       return;
     }
 
-    // console.log("VALIDATION PASSED: Proceeding with duplicate");
     duplicateLastRowTableTengah("tableTengah");
   });
 
@@ -3817,20 +3334,13 @@ $(function () {
 
   // Delete row di Table Tengah
   $(document).on("click", ".remove-row-icon", function (e) {
-    // console.log(" REMOVE ICON CLICKED!", e);
-
     const $rowToRemove = $(this).closest("tr");
     const $table = $rowToRemove.closest("table");
     const tableId = $table.attr("id");
 
-    // console.log("Table ID:", tableId, "Row:", $rowToRemove);
-
     if (tableId === "tableKanan") {
-      // console.log(" Delete from tableKanan - skipping tengah handler");
       return;
     }
-
-    // console.log(" Processing delete from tableTengah");
 
     const rowId = $rowToRemove.data("rowid");
     const rowIndex = $rowToRemove.index(); // FALLBACK: gunakan index dari DOM
@@ -3841,11 +3351,8 @@ $(function () {
 
     // FALLBACK: jika rowId tidak match, gunakan rowIndex
     if (dataIndex === -1 && rowIndex >= 0) {
-      // console.log(` rowId not found, using rowIndex fallback: ${rowIndex}`);
       dataIndex = rowIndex;
     }
-
-    // console.log("Data index to delete:", dataIndex);
 
     if (dataIndex !== -1 && allTableTengahData[dataIndex]) {
       const deletedRow = allTableTengahData[dataIndex];
@@ -3860,14 +3367,11 @@ $(function () {
 
       // Hapus dari data source utama
       allTableTengahData.splice(dataIndex, 1);
-      // console.log(" Removed from allTableTengahData");
     } else {
-      // console.log(" Data not found in allTableTengahData");
     }
 
     // Hapus row DOM
     $rowToRemove.remove();
-    // console.log(" Row removed from DOM");
 
     if (deletedVendorId > 0 && kiriRowIdToDelete) {
       let remainingRowsWithSameBatch = allTableTengahData.filter((row) => {
@@ -3897,7 +3401,6 @@ $(function () {
           $activeBtn.length > 0 &&
           $activeBtn.attr("data-active") === "true"
         ) {
-          // console.log(`Clearing active table kanan...`);
           $("#tableKanan").html("");
           $("#judulTableKanan").text("").css("visibility", "hidden");
           $("#tableKananCalc").css("visibility", "hidden");
@@ -3918,8 +3421,6 @@ $(function () {
 
     // Update visibility button duplicate setelah row dihapus
     updateDuplicateButtonVisibility();
-
-    // console.log(" DELETE COMPLETE");
   });
 
   $(document).on("change", ".shipment-date-field", function () {
@@ -3961,8 +3462,6 @@ $(function () {
     const wwValue = $(this).val(); // ex: WW202540
     const rowId = $currentRow.attr("data-rowid");
 
-    // console.log("WW changed:", wwValue, "rowId:", rowId);
-
     if (!wwValue || !wwValue.startsWith("WW")) {
       $currentRow.find(".shipment-date-field").val("");
       // Clear WW dari data model jika ada rowId
@@ -3987,8 +3486,6 @@ $(function () {
     const year = parseInt(wwValue.substring(2, 6), 10);
     const week = parseInt(wwValue.substring(6, 8), 10);
 
-    // console.log("Parsed year:", year, "week:", week);
-
     if (isNaN(year) || isNaN(week)) {
       console.warn("Invalid WW format:", wwValue);
       return;
@@ -4002,8 +3499,6 @@ $(function () {
     const dd = String(mondayDate.getDate()).padStart(2, "0");
     const formattedDate = `${yyyy}-${mm}-${dd}`;
 
-    // console.log("Calculated Monday date:", formattedDate, "for WW:", wwValue);
-
     // set ke shipment-date-field
     $currentRow.find(".shipment-date-field").val(formattedDate);
 
@@ -4013,10 +3508,6 @@ $(function () {
       if (rowData) {
         rowData.shipmentDate = formattedDate;
         rowData.ww = wwValue;
-        // console.log("Updated allTableTengahData for rowId", rowId, ":", {
-        //   shipmentDate: formattedDate,
-        //   ww: wwValue,
-        // });
       } else {
         console.warn("rowData tidak ditemukan untuk rowId:", rowId);
         const rowIndex = $currentRow.index();
@@ -4042,12 +3533,6 @@ $(function () {
         if (foundData) {
           foundData.shipmentDate = formattedDate;
           foundData.ww = wwValue;
-          // console.log("Updated allTableTengahData via vendor+batch fallback:", {
-          //   vendor: vendorId,
-          //   batch: batch,
-          //   shipmentDate: formattedDate,
-          //   ww: wwValue,
-          // });
         } else {
           console.warn("Even fallback failed - could not update rowData");
         }
@@ -4067,9 +3552,6 @@ $(function () {
 
     const termDaysField = $currentRow.find(".term-days-field");
     if (termDaysField.val() && termDaysField.val() !== "") {
-      // console.log(
-      //   "Auto-triggering term-days-field change event due to WW/shipmentDate change",
-      // );
       termDaysField.trigger("change");
     }
   });
@@ -4084,7 +3566,6 @@ $(function () {
 
       if (shipmentDate && shipmentDate.trim() !== "" && qty && qty != 0) {
         if (activeRows > 0) {
-          // console.log(" shipmentDate & qty filled, reset activeRows");
           activeRows = 0;
         }
       }
@@ -4132,35 +3613,6 @@ $(function () {
 
     // Update visibility button duplicate setelah price berubah
     updateDuplicateButtonVisibility();
-  });
-
-  $(document).on("change", ".item-code-field", function () {
-    const $selectElement = $(this);
-    const $currentRow = $selectElement.closest("tr");
-    const rowIndex = $currentRow.index();
-
-    const selectedId = $selectElement.val();
-    const itemUnitId =
-      parseInt($selectElement.find(":selected").data("itemunitid"), 10) || 0;
-    const unitName = $selectElement.find(":selected").data("unitname") || "";
-    const selectedText = $selectElement.find("option:selected").text();
-
-    // update ke array
-    if (allTableTengahData[rowIndex]) {
-      allTableTengahData[rowIndex].itemCode = parseInt(selectedId, 10) || 0;
-      allTableTengahData[rowIndex].itemUnitId = itemUnitId;
-      allTableTengahData[rowIndex].unitName = unitName;
-    }
-
-    // update field readonly di kolom unit
-    $currentRow.find(".item-unit-field").val(unitName);
-
-    // console.log("Item ID terpilih untuk baris " + rowIndex + ": " + selectedId);
-    // console.log(
-    //   "Item Code/Teks terpilih untuk baris " + rowIndex + ": " + selectedText,
-    // );
-    // console.log("Unit ID:", itemUnitId);
-    // console.log("Unit Name:", unitName);
   });
 
   $(document).on("input", ".color-field", function () {
@@ -4268,37 +3720,16 @@ $(function () {
           rShipmentDate === rowData.shipmentDate;
       }
 
-      // console.log(`Row ${idx}:`, {
-      //   rVendor,
-      //   rBatch,
-      //   rPoDateEst,
-      //   isMatch,
-      //   vendorMatch: rVendor === vendorId,
-      //   batchMatch: rBatch === batch,
-      // });
-
       // Cek apakah row ini match dengan group yang sama (vendor + batch)
       if (isMatch && rPoDateEst) {
         poDateEstsFound.push(rPoDateEst);
 
         const d = new Date(rPoDateEst);
-        // console.log(`%c  → MATCH! PO Date: ${rPoDateEst}`, "color: green");
         if (d < earliestPoDateEst) {
-          // console.log(
-          //   `%c  → Lebih awal dari ${earliestPoDateEst.toISOString().split("T")[0]}, update earliest`,
-          //   "color: orange",
-          // );
           earliestPoDateEst = d;
         }
       }
     });
-
-    //console.log("%c=== HASIL ===", "color: blue; font-weight: bold");
-    // console.log("Semua PO Date ditemukan:", poDateEstsFound);
-    // console.log(
-    //   "Earliest PO Date Est:",
-    //   earliestPoDateEst.toISOString().split("T")[0],
-    // );
 
     const blanketEstStr = earliestPoDateEst.toISOString().split("T")[0];
 
@@ -4314,16 +3745,8 @@ $(function () {
 
   // GANTI handler .batch-field input ini:
   $(document).on("input", ".batch-field", function () {
-    // console.log("🔥 INPUT BATCH-FIELD HANDLER TRIGGERED");
-
     const $currentRow = $(this).closest("tr");
     const rowIndex = $currentRow.index();
-
-    // console.log("  → rowIndex from DOM:", rowIndex);
-    // console.log(
-    //   "  → allTableTengahData length:",
-    //   allTableTengahData ? allTableTengahData.length : "undefined",
-    // );
 
     if (!allTableTengahData[rowIndex]) {
       console.warn(
@@ -4335,15 +3758,6 @@ $(function () {
     const oldBatch = allTableTengahData[rowIndex].batch;
     const newBatch = parseInt($(this).val()) || 0;
     const currentVendorId = allTableTengahData[rowIndex].vendor;
-
-    // console.log(
-    //   "  → oldBatch:",
-    //   oldBatch,
-    //   "newBatch:",
-    //   newBatch,
-    //   "vendorId:",
-    //   currentVendorId,
-    // );
 
     if (newBatch > 0) {
       const conflict = allTableTengahData.some((row, idx) => {
@@ -4385,26 +3799,14 @@ $(function () {
       );
     });
 
-    // console.log(
-    //   "  → otherRowsWithOldBatch check result:",
-    //   otherRowsWithOldBatch,
-    // );
-    // console.log("  → Scanning allTableTengahData for matches:");
     allTableTengahData.forEach((row, idx) => {
       if (idx !== rowIndex) {
         const vendorMatch = parseInt(row.vendor) === parseInt(vendorId);
         const batchMatch = parseInt(row.batch) === parseInt(oldBatch);
-        // console.log(
-        //   `    [idx=${idx}] vendor=${row.vendor} (match:${vendorMatch}), batch=${row.batch} (match:${batchMatch})`,
-        // );
       }
     });
 
     allTableTengahData[rowIndex].batch = newBatch;
-    // console.log(
-    //   "   Updated allTableTengahData[" + rowIndex + "].batch to:",
-    //   newBatch,
-    // );
 
     // PRESERVE data kiri
     const oldKiriData = kumpulanDataTableKiriKanan.find(
@@ -4422,29 +3824,13 @@ $(function () {
         (d) => d.rowId === oldKey,
       ).length;
 
-      // console.log(
-      //   `  → Entries dengan oldKey "${oldKey}": ${oldKeyEntriesCount}`,
-      // );
-
       if (otherRowsWithOldBatch || oldKeyEntriesCount > 1) {
-        // console.log(
-        //   " Multiple rows/entries share oldKey → Creating/Using NEW entry for newKey",
-        // );
-
         // CEK DULU: apakah newKey sudah ada?
         if (newKeyAlreadyExists) {
           // Kalau sudah ada, jangan CREATE BARU, gunakan existing
-          // console.log(
-          //   " newKey",
-          //   newKey,
-          //   "sudah exist! Reuse existing entry (skip create new)",
-          // );
 
           // FIX: PRESERVE blanketEst dari oldKiriData jika newKeyAlreadyExists tidak punya
           if (oldKiriData.blanketEst && !newKeyAlreadyExists.blanketEst) {
-            // console.log(
-            //   " PRESERVING blanketEst dari old entry ke existing new entry",
-            // );
             newKeyAlreadyExists.blanketEst = oldKiriData.blanketEst;
           }
         } else {
@@ -4457,30 +3843,17 @@ $(function () {
           // (tidak di-reset, agar payment data tetap aman)
 
           kumpulanDataTableKiriKanan.push(newKiriData);
-
-          // console.log("Created NEW kumpulanDataTableKiriKanan entry:", {
-          //   newKey,
-          //   newBatch,
-          //   blanketEst: newKiriData.blanketEst,
-          //   paymentDataPreserved:
-          //     Array.isArray(newKiriData.paymentDate) &&
-          //     newKiriData.paymentDate.length > 0,
-          // });
         }
       } else {
         // CEK DULU: apakah newKey sudah ada?
         if (newKeyAlreadyExists) {
           if (oldKiriData.blanketEst && !newKeyAlreadyExists.blanketEst) {
-            // console.log(
-            //   " PRESERVING blanketEst dari old entry ke existing new entry",
-            // );
             newKeyAlreadyExists.blanketEst = oldKiriData.blanketEst;
           } else if (oldKiriData.blanketEst && newKeyAlreadyExists.blanketEst) {
             // Jika keduanya ada, gunakan yang lebih awal (earliest date)
             const oldDate = new Date(oldKiriData.blanketEst);
             const newDate = new Date(newKeyAlreadyExists.blanketEst);
             if (oldDate < newDate) {
-              // console.log(" USING earlier blanketEst from old entry");
               newKeyAlreadyExists.blanketEst = oldKiriData.blanketEst;
             }
           }
@@ -4492,9 +3865,6 @@ $(function () {
             (!Array.isArray(newKeyAlreadyExists.paymentDate) ||
               newKeyAlreadyExists.paymentDate.length === 0)
           ) {
-            // console.log(
-            //   " PRESERVING payment data dari old entry ke existing new entry",
-            // );
             newKeyAlreadyExists.paymentDate = structuredClone(
               oldKiriData.paymentDate,
             );
@@ -4524,21 +3894,11 @@ $(function () {
           );
           if (oldKeyIndex !== -1) {
             kumpulanDataTableKiriKanan.splice(oldKeyIndex, 1);
-            // console.log(" REMOVED old entry from kumpulanDataTableKiriKanan");
           }
         } else {
           // SAFE: newKey tidak exist, rename oldKey langsung
           oldKiriData.batch = newBatch;
           oldKiriData.rowId = newKey;
-
-          // console.log(
-          //   " Successfully RENAMED batch in kumpulanDataTableKiriKanan:",
-          //   {
-          //     oldKey,
-          //     newKey,
-          //     blanketEst: oldKiriData.blanketEst,
-          //   },
-          // );
         }
       }
     }
@@ -4548,15 +3908,11 @@ $(function () {
     const $poDateEstField = $currentRow.find(".po-date-est-field");
     if ($poDateEstField.length) {
       $poDateEstField.val("");
-      // console.log(" Cleared poDateEst for recalculation after batch change");
     }
 
     // Sekarang trigger recalculation blanketEst dengan memicu term-days change event
     const $termDaysField = $currentRow.find(".term-days-field");
     if ($termDaysField.length && $termDaysField.val()) {
-      // console.log(
-      //   " Triggering term-days recalculation after batch change for blanketEst fix",
-      // );
       setTimeout(() => {
         $termDaysField.trigger("change");
       }, 100);
@@ -4598,11 +3954,7 @@ $(function () {
       $("#tableKanan").empty();
       $("#judulTableKanan").css("visibility", "hidden");
       $("#tableKananHead").css("visibility", "hidden");
-      // console.log(` Payment view di-closed karena ganti vendor/batch`);
     } else {
-      // console.log(
-      //   ` Payment view tetap dipertahankan (vendor+batch masih sama)`,
-      // );
     }
     if (allTableTengahData[rowIndex]) {
       const oldVendorIdTemp = allTableTengahData[rowIndex].vendor;
@@ -4622,10 +3974,6 @@ $(function () {
 
         // Set batch ke batch tertinggi overall + 1
         newBatchValue = highestBatchOverall + 1;
-
-        // console.log(
-        //   ` AUTO-INCREMENT BATCH: Vendor ${oldVendorIdTemp} → ${newVendorId}, Batch: ${oldBatch} → ${newBatchValue} (highest in table: ${highestBatchOverall})`,
-        // );
       }
 
       // Sekarang update vendor
@@ -4642,77 +3990,14 @@ $(function () {
         if (newBatchValue !== oldBatch) {
           $currentRow.find(".batch-field").val(newBatchValue);
           allTableTengahData[rowIndex].batch = newBatchValue;
-          // console.log(`Batch updated to: ${newBatchValue}`);
         }
       }
       updateTableKiriSummary();
     }
 
-    // console.log(
-    //   `[Tengah] Vendor di baris ${rowIndex + 1} diubah menjadi ID: ${newVendorId} (rowId: ${rowId})`,
-    // );
-
     // Update visibility button duplicate setelah vendor berubah
     updateDuplicateButtonVisibility();
   });
-
-  // $(document).on("input", ".batch-field", function () {
-  //   const $currentRow = $(this).closest("tr");
-  //   const rowIndex = $currentRow.index();
-  //   const oldBatch = allTableTengahData[rowIndex]?.batch || null;
-  //   const newBatch = parseInt($(this).val()) || 0;
-
-  //   if (allTableTengahData[rowIndex]) {
-  //     const vendorId = allTableTengahData[rowIndex].vendor;
-  //     const shipmentDate = allTableTengahData[rowIndex].shipmentDate;
-  //     const currentFocusedVendor = focusedObject?.vendorId;
-  //     const currentFocusedBatch = focusedObject?.batch;
-  //     const currentFocusedShipmentDate = focusedObject?.shipmentDate;
-
-  //     allTableTengahData[rowIndex].batch = newBatch;
-
-  //     // Cek konsistensi berdasarkan batch ATAU shipmentDate
-  //     let shouldResetPayment = false;
-
-  //     if (vendorId === currentFocusedVendor) {
-  //       const isSameBatchExists = kumpulanDataTableKiriKanan.some(
-  //         (r) =>
-  //           parseInt(r.vendorId) === parseInt(vendorId) &&
-  //           parseInt(r.batch) === parseInt(newBatch),
-  //       );
-
-  //       // Reset hanya jika batch baru benar-benar berbeda (tidak ada shipment lain yang pakai batch ini)
-  //       if (
-  //         !isSameBatchExists &&
-  //         newBatch > 0 &&
-  //         newBatch !== currentFocusedBatch
-  //       ) {
-  //         shouldResetPayment = true;
-  //       } else if (
-  //         newBatch === 0 &&
-  //         shipmentDate !== currentFocusedShipmentDate
-  //       ) {
-  //         shouldResetPayment = true;
-  //       }
-  //     }
-
-  //     if (shouldResetPayment) {
-  //       $("#tableKanan").empty();
-  //       $("#judulTableKanan").css("visibility", "hidden");
-  //       $("#tableKananHead").css("visibility", "hidden");
-  //       // console.log(` Payment view di-closed karena ganti batch/shipmentDate`);
-  //     }
-
-  //     if (!validateBatchVendorConsistency()) {
-  //       $(this).val(oldBatch === null ? "" : oldBatch);
-  //       allTableTengahData[rowIndex].batch = oldBatch;
-  //     }
-
-  //     updateTableKiriSummary();
-  //   }
-
-  //   updateTotalQty();
-  // });
 
   function validateBatchVendorConsistency() {
     const groupMap = {};
@@ -4744,99 +4029,6 @@ $(function () {
     }
 
     return true; // Atau logika validasi sesuai kebutuhan
-  }
-
-  var today = new Date();
-  var year = today.getFullYear();
-  var month = (today.getMonth() + 1).toString().padStart(2, "0");
-  var day = today.getDate().toString().padStart(2, "0");
-
-  function getBigDataTableTengah() {
-    // Ambil data dari table tengah
-    allTableTengahData = [];
-    $(".BigDataTableTengah tr").each(function () {
-      var $row = $(this);
-      var itemCode = parseInt($row.find(".item-code-field").val(), 10) || 0;
-      var itemUnit = parseInt($row.find(".item-unit-field").val(), 10) || 0;
-      var vendor = parseInt($row.find(".vendor-field").val(), 10) || 0;
-      var color = $row.find(".color-field").val();
-      var shipmentYear = formatToDate($row.find(".shipment-year-field").val());
-      var ww = $row.find(".ww-field").val();
-      var shipmentDate = formatToDate($row.find(".shipment-date-field").val());
-      var qty = parseInt($row.find(".qty-field").val()) || 0;
-      var price = parseFloat($row.find(".price-field").val()) || 0;
-      var termDays = $row.find(".term-days-field").val();
-      var poDateEst = $row.find(".po-date-est-field").val();
-      var batch = parseInt($row.find(".batch-field").val()) || 0;
-
-      if (itemCode && vendor && shipmentDate && qty && price) {
-        allTableTengahData.push({
-          no: noTable,
-          itemCode: itemCode,
-          itemUnit: itemUnit,
-          vendor: vendor,
-          color: color,
-          shipmentYear: shipmentYear,
-          ww: ww,
-          shipmentDate: shipmentDate,
-          qty: qty,
-          price: price,
-          poDateEst: poDateEst,
-          termDays: termDays,
-          batch: batch,
-        });
-        noTable++;
-      }
-    });
-  }
-  function getBigDataTableKiri() {
-    allTableKiriData = [];
-
-    if (kumpulanDataTableKiriKanan && kumpulanDataTableKiriKanan.length > 0) {
-      kumpulanDataTableKiriKanan.forEach((row, index) => {
-        const rowData = {
-          vendorId: parseInt(row.vendorId) || 0,
-          vendorName: vendorMap[row.vendorId] || "N/A",
-          batch: parseInt(row.batch) || 0,
-          shipmentDate: row.shipmentDate || "", // Tambahkan shipmentDate
-          total: parseFloat(row.totalAmount) || 0,
-        };
-
-        if (rowData.vendorId > 0 && rowData.vendorName !== "N/A") {
-          allTableKiriData.push(rowData);
-        }
-      });
-      return;
-    }
-
-    // Fallback: baca dari DOM
-    // console.log("Fallback: reading from DOM");
-    const tableRows = $(".tableKiri tbody tr");
-
-    tableRows.each(function (index, row) {
-      const $row = $(this);
-      const $button = $row.find(".view-summary-details-btn");
-
-      const vendorId = parseInt($button.data("vendorid")) || 0;
-      const batch = parseInt($button.data("batch")) || 0;
-      const shipmentDate = $button.data("shipmentdate") || ""; // Tambahkan
-      const vendorName = $button.data("vendorname") || "N/A";
-
-      const totalText = $row.find(".totalAmountCell").text().trim();
-      const total = parseFloat(totalText.replace(/[^0-9.-]+/g, "")) || 0;
-
-      if (vendorId > 0 && vendorName !== "N/A") {
-        allTableKiriData.push({
-          vendorId: vendorId,
-          vendorName: vendorName,
-          batch: batch,
-          shipmentDate: shipmentDate, // Tambahkan
-          total: total,
-        });
-      }
-    });
-
-    // console.log("Final allTableKiriData from DOM:", allTableKiriData);
   }
 
   var arrListIDTableKiri = [];
@@ -4939,11 +4131,6 @@ $(function () {
                 `Middle table Row ${rowNo}: Qty must be more than 0.`,
               );
             }
-            // if (!row.price || isNaN(row.price) || row.price <= 0) {
-            //   errors.push(
-            //     `Middle table Row ${rowNo}: Price must be less than 0.`,
-            //   );
-            // }
           });
         }
         if (
@@ -4989,7 +4176,6 @@ $(function () {
           });
           isCalculatePaymentClicked = true;
         } else if (!hasPaymentData && kumpulanDataTableKiriKanan.length > 0) {
-          // console.log("No payment data found - skipping auto calculate");
         }
 
         if (errors.length > 0) {
@@ -5009,9 +4195,6 @@ $(function () {
   // Helper untuk error AJAX yang diperbaiki
   function showAjaxError(section, xhr) {
     console.error(`Error save ${section}:`, xhr);
-    // console.log("Response Status:", xhr.status);
-    // console.log("Response Text:", xhr.responseText);
-    // console.log("Response Headers:", xhr.getAllResponseHeaders());
 
     let errorMessage = `Gagal Simpan ${section}:\n`;
 
@@ -5112,8 +4295,6 @@ $(function () {
           },
           success: function (res) {
             if (res && res.status === "success") {
-              // console.log("Detail saved response:", res);
-
               const maybeDetailIds = Array.isArray(res.detailIds)
                 ? res.detailIds
                 : null;
@@ -5187,8 +4368,6 @@ $(function () {
       dataType: "json",
       timeout: 30000,
       success: function (tengahResponse) {
-        // console.log("AJAX save middle table success!", tengahResponse);
-
         if (tengahResponse && tengahResponse.status === "success") {
           // Lanjut ke save table kiri
           saveTableKiri(purchasePlanID);
@@ -5218,7 +4397,6 @@ $(function () {
   }
   function saveTableKiri(purchasePlanID, preDetailIds = null) {
     const saveButton = $(".btn-save");
-    // console.log("=== saveTableKiriAjax ===", purchasePlanID, preDetailIds);
 
     const tableKiriPayload =
       typeof allTableKiriData !== "undefined" &&
@@ -5257,8 +4435,6 @@ $(function () {
     }
 
     if (Array.isArray(preDetailIds) && preDetailIds.length > 0) {
-      // console.log("Using pre-supplied detailIds from save():", preDetailIds);
-
       if (kumpulanDataTableKiriKanan && kumpulanDataTableKiriKanan.length > 0) {
         kumpulanDataTableKiriKanan.forEach((row, idx) => {
           row.purchasePlanDtlID = preDetailIds[idx] ?? preDetailIds[0];
@@ -5281,8 +4457,6 @@ $(function () {
       dataType: "json",
       data: JSON.stringify(payload),
       success: function (res) {
-        // console.log("saveTableKiri response:", res);
-
         const detailIds = Array.isArray(res.inserted_summary_ids)
           ? res.inserted_summary_ids
           : Array.isArray(res.saved_records)
@@ -5359,18 +4533,12 @@ $(function () {
             // oaCredit: Number(((dataClass.OACredit && dataClass.OACredit[i]) || 0).toString().replace(/,/g, '')),
           };
 
-          // console.log(
-          //   `Payment detail ${i} for vendor ${plainObject.namaVendor}:`,
-          //   paymentDetail,
-          // );
           plainObject.paymentDetails.push(paymentDetail);
         }
       }
       return plainObject;
     });
 
-    // console.log(" Final converted result:", result);
-    // console.log("=== END CONVERSION ===");
     return result;
   }
 
@@ -5384,11 +4552,8 @@ $(function () {
         (row) => Array.isArray(row.paymentDate) && row.paymentDate.length > 0,
       );
 
-    // console.log("hasAnyPaymentData:", hasAnyPaymentData);
-
     // Jika tidak ada payment data, tidak perlu generate calculation, langsung success
     if (!hasAnyPaymentData) {
-      // console.log("No payment data found - skipping payment calculation save");
       alert(
         "SUCCESS: Payment data empty - document saved without payment calculations",
       );
@@ -5428,22 +4593,11 @@ $(function () {
     //  PERBAIKAN UTAMA: Konversi dataClass ke plain object
     let allTableKananData = [];
 
-    // console.log(
-    //   " Checking kumpulanDataTableKiriKanan type:",
-    //   typeof kumpulanDataTableKiriKanan,
-    // );
-    // console.log(" kumpulanDataTableKiriKanan:", kumpulanDataTableKiriKanan);
-
     if (kumpulanDataTableKiriKanan && kumpulanDataTableKiriKanan.length > 0) {
       try {
-        // console.log(" Starting conversion process...");
         allTableKananData = convertTableKananDataToPlainObject(
           kumpulanDataTableKiriKanan,
         );
-        // console.log(
-        //   " Successfully converted allTableKananData:",
-        //   allTableKananData,
-        // );
 
         //  Validasi hasil konversi
         if (!allTableKananData || allTableKananData.length === 0) {
@@ -5457,7 +4611,6 @@ $(function () {
             typeof firstItem === "object" &&
             firstItem.constructor.name === "Object"
           ) {
-            console.log(" Data successfully converted to plain object");
           } else {
             console.error(
               " Data conversion failed - still not plain object:",
@@ -5477,7 +4630,6 @@ $(function () {
         return;
       }
     } else {
-      console.log(" Tidak ada kumpulanDataTableKiriKanan untuk dikonversi");
       allTableKananData = [];
     }
 
@@ -5493,19 +4645,10 @@ $(function () {
       allTableKananData: allTableKananData,
     };
 
-    // console.log(" Final payload structure:", {
-    //   purchasePlanID: typeof payload.purchasePlanID,
-    //   arrListIDTableKiri: payload.arrListIDTableKiri,
-    //   allTableKananData_count: payload.allTableKananData.length,
-    //   allTableKananData_sample: payload.allTableKananData[0] || "empty",
-    // });
-
     //  Test JSON serialization sebelum dikirim
     let jsonString;
     try {
       jsonString = JSON.stringify(payload);
-      // console.log(" JSON serialization test passed");
-      // console.log("JSON length:", jsonString.length);
     } catch (error) {
       console.error(" JSON serialization failed:", error);
       alert("Error: Failed to serialize data for sending");
@@ -5521,17 +4664,8 @@ $(function () {
       dataType: "json",
       data: jsonString,
       timeout: 30000,
-      beforeSend: function () {
-        // console.log(" Sending payment details to server...");
-        // console.log(
-        //   "URL:",
-        //   BASE_URL + "scm/purchasing/purchase_order_plan/save_payment_details",
-        // );
-        // console.log("Data size:", jsonString.length, "characters");
-      },
+      beforeSend: function () {},
       success: function (paymentResponse) {
-        // console.log("Response payment details:", paymentResponse);
-
         if (paymentResponse && paymentResponse.status === "success") {
           const savedCount = paymentResponse.saved_records || 0;
           alert(`SUCCESS: \nPayment records saved: ${savedCount}`);
@@ -5568,14 +4702,7 @@ $(function () {
             } else if (arrListIDTableKiri[0]) {
               cacheItem.purchasePlanDtlID = arrListIDTableKiri[0];
             }
-
-            // console.log(
-            //   `Cache item ${cacheItem.rowId} assigned purchasePlanDtlID:`,
-            //   cacheItem.purchasePlanDtlID,
-            // );
           });
-
-          // console.log("Updated globalCalcCache:", globalCalcCache);
 
           globalCalcCache.forEach((row) => {
             savePaymentCalcData(
@@ -5646,7 +4773,6 @@ $(function () {
             if (errorObj.debug) {
               debugInfo =
                 "\nDebug Info: " + JSON.stringify(errorObj.debug, null, 2);
-              console.log("Server debug info:", errorObj.debug);
             }
           } catch (e) {
             debugInfo =
@@ -5666,25 +4792,11 @@ $(function () {
   //  FUNGSI DEBUG TAMBAHAN
   function debugCurrentData() {
     if (kumpulanDataTableKiriKanan && kumpulanDataTableKiriKanan.length > 0) {
-      kumpulanDataTableKiriKanan.forEach((item, index) => {
-        console.log(`DataClass ${index}:`, {
-          type: typeof item,
-          constructor: item.constructor ? item.constructor.name : "unknown",
-          namaVendor: item.namaVendor,
-          paymentDate: item.paymentDate,
-          paymentDateType: Array.isArray(item.paymentDate)
-            ? "array"
-            : typeof item.paymentDate,
-          paymentDateLength: item.paymentDate
-            ? item.paymentDate.length
-            : "no length",
-        });
-      });
+      kumpulanDataTableKiriKanan.forEach((item, index) => {});
       try {
         const converted = convertTableKananDataToPlainObject(
           kumpulanDataTableKiriKanan,
         );
-        console.log("Conversion result:", converted);
       } catch (error) {
         console.error("Conversion failed:", error);
       }
@@ -5695,22 +4807,16 @@ $(function () {
   function getBigDataTableKiri() {
     allTableKiriData = [];
 
-    // console.log("=== getBigDataTableKiri START (New Structure) ===");
-
     // Gunakan kumpulanDataTableKiriKanan yang sudah ter-update sebagai sumber utama
     if (kumpulanDataTableKiriKanan && kumpulanDataTableKiriKanan.length > 0) {
-      // console.log("Using kumpulanDataTableKiriKanan as data source");
-
       kumpulanDataTableKiriKanan.forEach((row, index) => {
         const rowData = {
           vendorId: parseInt(row.vendorId) || 0,
           vendorName: vendorMap[row.vendorId] || "N/A",
-          blanketEst: row.blanketEst || "", // ✓ FIX: Baca dari row.blanketEst (bukan blanketEstDate)
+          blanketEst: row.blanketEst || "", // baca dari row.blanketEst, bukan blanketEstDate
           batch: parseInt(row.batch) || 0,
           total: parseFloat(row.totalAmount) || 0,
         };
-
-        // console.log(`Row ${index} from kumpulanDataTableKiriKanan:`, rowData);
 
         if (rowData.vendorId > 0 && rowData.vendorName !== "N/A") {
           allTableKiriData.push(rowData);
@@ -5719,15 +4825,9 @@ $(function () {
         }
       });
 
-      // console.log(
-      //   "Final allTableKiriData from kumpulanDataTableKiriKanan:",
-      //   allTableKiriData,
-      // );
-      // console.log("=== getBigDataTableKiri END ===");
       return;
     }
     const tableRows = $(".tableKiri tbody tr");
-    // console.log("Found table rows:", tableRows.length);
 
     if (tableRows.length === 0) {
       console.warn("No table rows found in .tableKiri tbody tr");
@@ -5759,8 +4859,6 @@ $(function () {
         // Parse total dari text (hapus formatting)
         const totalText = $totalCell.text().trim();
         rowData.total = parseFloat(totalText.replace(/[^0-9.-]+/g, "")) || 0;
-
-        // console.log(`Row ${index} from DOM (new structure):`, rowData);
       } else {
         // Struktur lama (fallback jika masih ada)
         const cell0Text = $row.find("td:eq(0)").text().trim();
@@ -5774,8 +4872,6 @@ $(function () {
 
         rowData.total = parseFloat(cell2Text.replace(/[^0-9.-]+/g, "")) || 0;
         rowData.vendorId = parseInt($viewButton.data("vendorid"), 10) || 0;
-
-        // console.log(`Row ${index} from DOM (old structure):`, rowData);
       }
 
       // Hanya tambahkan jika data valid
@@ -5785,7 +4881,6 @@ $(function () {
         rowData.vendorName !== "N/A"
       ) {
         allTableKiriData.push(rowData);
-        // console.log(`Row ${index} added to allTableKiriData`);
       } else {
         console.warn(`Row ${index} skipped - invalid data:`, rowData);
       }
@@ -5810,7 +4905,7 @@ $(function () {
           const vendorId = $button.data("vendorid");
           const batch = $button.data("batch") || 0;
           const shipmentDate = $button.data("shipmentdate") || ""; // Tambahkan
-          const blanketEstDate = $button.attr("data-blanketestdate") || ""; // 🔥 TAMBAHKAN: Ambil blanketEstDate
+          const blanketEstDate = $button.attr("data-blanketestdate") || "";
           const totalText = $totalCell.text().trim();
           const totalAmount =
             parseFloat(totalText.replace(/[^0-9.-]+/g, "")) || 0;
@@ -5821,7 +4916,7 @@ $(function () {
               vendorId: vendorId,
               batch: batch,
               shipmentDate: shipmentDate,
-              blanketEst: blanketEstDate, // ✓ FIX: Gunakan nama field yang konsisten (blanketEst, bukan blanketEstDate)
+              blanketEst: blanketEstDate, // field name konsisten: blanketEst, bukan blanketEstDate
               totalAmount: totalAmount,
               namaVendor: vendorMap[vendorId] || "N/A",
               paymentDate: [""],
@@ -5873,21 +4968,11 @@ $(function () {
   const $addLineButton = $("#addLineTableTengah");
   $addLineButton.prop("disabled", true);
 
-  console.time("Vendor Load");
-  console.time("Item Load");
-  console.time("Color Load");
-
-  $.when(
-    loadVendorOptionsAndMap().always(() => console.timeEnd("Vendor Load")),
-    loadItemOptions().always(() => console.timeEnd("Item Load")),
-    loadColorOptions().always(() => console.timeEnd("Color Load")),
-  )
+  $.when(loadItemOptions(), loadColorOptions())
     .done(function () {
-      // console.log("All vendor and item options are loaded and ready.");
       $addLineButton.prop("disabled", false);
       updateTableKiriSummary();
     })
-
     .fail(function () {
       console.error(
         "Failed to load all required options. Add Line button remains disabled.",
