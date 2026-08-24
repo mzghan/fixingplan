@@ -1957,7 +1957,6 @@ $(function () {
     return validationResult;
   }
 
-
   function getAllTableKananData() {
     var rowData = [];
     $("#tableKanan tr")

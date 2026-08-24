@@ -695,6 +695,87 @@ public function add_new_color()
     echo $json_output;
   }
 
+  // Endpoint untuk select2 lazy-load vendor di Purchase Plan.
+  // Awalnya (tanpa q) return 5 vendor pertama, saat user mengetik baru search ke server.
+  // Reuse get_coaattr_customer_vendor() (sumber data yang sama dengan get_vendor()) supaya
+  // daftar vendor tetap konsisten dengan endpoint lama, hanya sekarang di-page & di-filter.
+  public function get_vendor_search()
+  {
+    $this->output->set_content_type('application/json');
+
+    $term = trim($this->input->get('q'));
+    $page = (int) $this->input->get('page');
+    if ($page < 1) $page = 1;
+
+    $limit = ($term === '') ? 5 : 20;
+    $offset = ($page - 1) * $limit;
+
+    ob_start();
+    $this->get_coaattr_customer_vendor();
+    $json_output = ob_get_clean();
+
+    $decoded = json_decode($json_output, true);
+    $allVendors = (json_last_error() === JSON_ERROR_NONE && !empty($decoded['data']))
+      ? $decoded['data']
+      : [];
+
+    if ($term !== '') {
+      $allVendors = array_values(array_filter($allVendors, function ($v) use ($term) {
+        $name = $v['coName'] ?? $v['Description'] ?? $v['name'] ?? '';
+        return stripos($name, $term) !== false;
+      }));
+    }
+
+    $total = count($allVendors);
+    $pageItems = array_slice($allVendors, $offset, $limit);
+
+    $results = array_map(function ($v) {
+      return [
+        'id'   => $v['coCode'] ?? $v['ID'] ?? $v['id'] ?? '',
+        'text' => $v['coName'] ?? $v['Description'] ?? $v['name'] ?? '',
+      ];
+    }, $pageItems);
+
+    echo json_encode([
+      'results' => $results,
+      'pagination' => ['more' => ($offset + $limit) < $total],
+    ]);
+  }
+
+  // Endpoint untuk select2 lazy-load item di Purchase Plan.
+  // Awalnya (tanpa q) return 5 item pertama, saat user mengetik baru search ke server.
+  public function get_item_search()
+  {
+    $this->output->set_content_type('application/json');
+
+    $term = trim($this->input->get('q'));
+    $page = (int) $this->input->get('page');
+    if ($page < 1) $page = 1;
+
+    $limit = ($term === '') ? 5 : 20;
+    $offset = ($page - 1) * $limit;
+
+    // ambil 1 baris ekstra untuk tahu apakah masih ada halaman berikutnya, tanpa count(*) terpisah
+    $items = $this->pom->searchItemList($term, $limit + 1, $offset);
+    $hasMore = count($items) > $limit;
+    $items = array_slice($items, 0, $limit);
+
+    $results = array_map(function ($item) {
+      return [
+        'id'         => $item['id'],
+        'text'       => $item['code'] . ' - ' . $item['description'],
+        'code'       => $item['code'],
+        'itemunitid' => $item['itemunitid'],
+        'unitname'   => $item['unitname'],
+      ];
+    }, $items);
+
+    echo json_encode([
+      'results' => $results,
+      'pagination' => ['more' => $hasMore],
+    ]);
+  }
+
   public function get_purchase_plan_dtl_summary_list()
   {
     if ($this->input->method() !== 'get') {

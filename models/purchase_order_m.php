@@ -247,30 +247,6 @@ class purchase_order_m extends CI_Model
         $query = $this->db->get();
         return $query->result_array();
     }
-    public function searchVendor($term = '')
-    {
-        $this->db->distinct();
-        $this->db->select('v.ID, v.Description');
-        $this->db->from('dbtPurchasePlanDtl d');
-        $this->db->join('dbmcoaattr v', 'v.ID = d.Vendor', 'left');
-        
-
-        if (!empty($term)) {
-            $this->db->like('v.Description', $term, 'both');
-        }
-
-        $this->db->limit(20);
-
-        $query = $this->db->get();
-
-        if (!$query) {
-            $error = $this->db->error();
-            log_message('error', 'DB Error searchVendor: ' . print_r($error, true));
-            return [];
-        }
-
-        return $query->result_array();
-    }
 
 
     public function insert_purchase_order_plan($data)
@@ -3781,6 +3757,38 @@ $shipment_detail = $this->db->query($sql_shipment, [
         $itemList = $this->db->query($query)->result_array();
         return $itemList;
     }
+
+    // Versi search + pagination dari getItemList(), dipakai select2 lazy-load
+    // supaya halaman awal tidak perlu narik semua item sekaligus.
+    public function searchItemList($term = '', $limit = 5, $offset = 0)
+    {
+        $this->db->distinct();
+        $this->db->select('a.id, a.code, a.description, c.id as itemunitid, c.unitname, a.Type, a.coaattrid as itemdeptid');
+        $this->db->from('dbmitem a');
+        $this->db->join('ods4..dbmitemmarketingname b', 'a.id = b.itemid', 'left');
+        $this->db->join('dbmitemunit c', 'a.id = c.itemid AND c.status <> 0');
+        $this->db->where('a.status <>', 0);
+
+        if (!empty($term)) {
+            $this->db->group_start();
+            $this->db->like('a.code', $term, 'both');
+            $this->db->or_like('a.description', $term, 'both');
+            $this->db->group_end();
+        }
+
+        $this->db->order_by('a.code', 'asc');
+        $this->db->limit($limit, $offset);
+
+        $query = $this->db->get();
+
+        if (!$query) {
+            log_message('error', 'DB Error searchItemList: ' . print_r($this->db->error(), true));
+            return [];
+        }
+
+        return $query->result_array();
+    }
+
 
     public function getColorList()
     {
