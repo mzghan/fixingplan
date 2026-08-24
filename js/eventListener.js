@@ -1514,29 +1514,12 @@ $(function () {
       // poDateEst: null,
     };
 
-    //  OPTIMIZATION: Batch update fungsi-fungsi update (defer jika perlu)
+    // Batch update fungsi-fungsi update
     // Tapi untuk accuracy, tetap lakukan semuanya
     updateTotalQty();
     updateTableKiriSummary();
     renumberRows();
     updateDuplicateButtonVisibility();
-  }
-
-  function addNewColorOption(inputEl) {
-    const val = inputEl.value.trim();
-    if (val) {
-      const select = $(inputEl).siblings("select")[0];
-      const newOpt = document.createElement("option");
-      newOpt.value = val;
-      newOpt.textContent = val;
-      select.insertBefore(
-        newOpt,
-        select.querySelector("option[value='__other__']"),
-      );
-      select.value = val; // pilih warna baru
-      inputEl.value = "";
-    }
-    $(inputEl).hide();
   }
 
   $(document).on(
@@ -1549,14 +1532,14 @@ $(function () {
       let batch = parseInt($row.find(".batch-field").val()) || 0;
       const shipmentDate = $row.find(".shipment-date-field").val() || "";
 
-      //  PERBAIKAN: Definisikan oldVendorId di awal agar bisa diakses di mana saja
+      // oldVendorId dibaca di awal supaya bisa dipakai di seluruh handler
       const oldVendorId = allTableTengahData[rowIndex]?.vendor || null;
 
-      //  PERBAIKAN: Deteksi jika ini adalah perubahan vendor, auto-increment batch
+      // Jika vendor berubah, auto-increment batch
       if ($(this).hasClass("vendorSelector")) {
         // Jika vendor benar-benar berubah (bukan pertama kali diisi)
-        //  PERBAIKAN: Gunakan oldVendorId > 0 untuk mendeteksi vendor yang sudah ada (actual change)
-        //  PERBAIKAN 2: Hanya auto-increment jika batch SEBELUMNYA > 0
+        // oldVendorId > 0 menandakan vendor sudah pernah diisi sebelumnya (bukan input pertama kali)
+        // Auto-increment batch hanya jika batch sebelumnya > 0
         if (
           oldVendorId > 0 &&
           oldVendorId !== vendorId &&
@@ -1653,7 +1636,7 @@ $(function () {
         } else {
           // **JIKA TIDAK DITEMUKAN, BUAT DATA BARU TAPI PAKAI SAVED blanketEst**
 
-          //  PERBAIKAN: Ketika vendor berubah (auto-increment batch), copy blanketEst dari entry vendor lama
+          // Saat vendor berubah (auto-increment batch), copy blanketEst dari entry vendor lama
           let blanketEstToCopy = savedBlanketEst || "";
 
           if (
@@ -1974,146 +1957,6 @@ $(function () {
     return validationResult;
   }
 
-  function validateTableKanan() {
-    const validationResult = {
-      isValid: true,
-      messages: [],
-      totalPercent: 0,
-      rowCount: 0,
-      emptyRows: [],
-    };
-
-    const $tableRows = $("#tableKanan tr").not(".no-data-row-kanan");
-    validationResult.rowCount = $tableRows.length;
-
-    if ($tableRows.length === 0) {
-      validationResult.isValid = false;
-      validationResult.messages.push("Table right must have 1 row data!");
-      return validationResult;
-    }
-
-    let totalPercent = 0;
-    let hasValidRows = false;
-
-    $tableRows.each(function (index, row) {
-      const $row = $(row);
-      const rowNumber = index + 1;
-      let isRowValid = true;
-      let emptyFields = [];
-
-      const paymentDate = $row.find(".paymentDateTableKanan").val();
-
-      const notes = $row.find(".notesTableKanan").val();
-      if (!notes || notes.trim() === "") {
-        emptyFields.push("Notes");
-        isRowValid = false;
-      }
-
-      const percentValue = $row.find(".percenTableKanan").val();
-      if (
-        !percentValue ||
-        percentValue.trim() === "" ||
-        isNaN(parseFloat(percentValue))
-      ) {
-        emptyFields.push("Percent");
-        isRowValid = false;
-      } else {
-        const percent = parseFloat(percentValue);
-        if (percent < 0) {
-          validationResult.messages.push(
-            `Line ${rowNumber}: The percentage must not be less than 0.`,
-          );
-          isRowValid = false;
-        } else if (percent > 100) {
-          validationResult.messages.push(
-            `Line ${rowNumber}: The percentage must not be more than 100.`,
-          );
-          isRowValid = false;
-        } else {
-          totalPercent += percent;
-        }
-      }
-
-      const formValue = $row.find(".formValueTableKanan").val();
-      if (!formValue) {
-        emptyFields.push("Form Value");
-        isRowValid = false;
-      }
-
-      const alertValue = $row.find(".alertTableKanan").val();
-      if (!alertValue) {
-        emptyFields.push("Alert");
-        isRowValid = false;
-      }
-      const termDays = $row.find(".termDaysTableKanan").val();
-      if (!termDays || termDays.trim() === "" || isNaN(parseInt(termDays))) {
-        emptyFields.push("Term Days");
-        isRowValid = false;
-      }
-      const oaCredit = $row.find(".OACreditTableKanan").val();
-
-      if (oaCredit && oaCredit.trim() !== "") {
-        const oaCreditVal = parseFloat(oaCredit);
-        if (isNaN(oaCreditVal)) {
-          validationResult.messages.push(
-            `Line ${rowNumber}: OA Credit must be a number.`,
-          );
-          isRowValid = false;
-        } else if (oaCreditVal < 0) {
-          validationResult.messages.push(
-            `Line ${rowNumber}: OA Credit must not be less than 0.`,
-          );
-          isRowValid = false;
-        }
-      }
-      if (emptyFields.length > 0) {
-        validationResult.emptyRows.push({
-          row: rowNumber,
-          fields: emptyFields,
-        });
-        validationResult.messages.push(
-          `Baris ${rowNumber}: Field must be filled in: ${emptyFields.join(", ")}.`,
-        );
-        isRowValid = false;
-      }
-
-      if (!isRowValid) {
-        validationResult.isValid = false;
-      } else {
-        hasValidRows = true;
-      }
-    });
-
-    validationResult.totalPercent = Math.round(totalPercent * 100) / 100;
-
-    if (hasValidRows) {
-      const tolerance = 0.01;
-      if (Math.abs(totalPercent - 100) > tolerance) {
-        validationResult.isValid = false;
-
-        if (totalPercent < 100) {
-          const shortage = Math.round((100 - totalPercent) * 100) / 100;
-          validationResult.messages.push(
-            `total percentage must be 100%!\n` +
-              `Now: ${validationResult.totalPercent}%\n` +
-              `still need: ${shortage}%\n` +
-              `Please add a new row or adjust the existing percentage.`,
-          );
-        } else {
-          const excess = Math.round((totalPercent - 100) * 100) / 100;
-          validationResult.messages.push(
-            `total percentage must not exceed 100%!\n` +
-              `Now: ${validationResult.totalPercent}%\n` +
-              `advantages: ${excess}%\n` +
-              `Please reduce the percentage.`,
-          );
-        }
-      } else {
-      }
-    }
-
-    return validationResult;
-  }
 
   function getAllTableKananData() {
     var rowData = [];
@@ -2551,7 +2394,7 @@ $(function () {
 
     // console.groupCollapsed(` [TermDays Handler] Row ${rowIndex + 1}`);
 
-    //  Sinkronkan row aktif dulu
+    // Sinkronkan row aktif dulu
     const $activeButton = $(".view-summary-details-btn[data-active='true']");
     if ($activeButton.length) {
       const activeRowId = $activeButton.attr("data-rowid");
@@ -2781,15 +2624,6 @@ $(function () {
     } else {
     }
   }
-  function formatDate(dateStr) {
-    if (!dateStr) return "";
-    const d = new Date(dateStr);
-    const day = String(d.getDate()).padStart(2, "0");
-    const month = String(d.getMonth() + 1).padStart(2, "0");
-    const year = d.getFullYear();
-    return `${day}-${month}-${year}`;
-  }
-
   function getPaymentDateFromItem(item, alert) {
     if (alert === 3) return item.shipmentDate; // Shipment
     if (alert === 2) return item.poDateEst; // PO Est
@@ -2881,7 +2715,7 @@ $(function () {
       const OACredit = target.OACredit[i];
 
       if (formValue === 1) {
-        // PERBAIKAN: Gunakan helper function untuk mendapatkan baseDate yang sesuai alert
+        // Gunakan helper function untuk mendapatkan baseDate sesuai alert
         const baseDate = getBaseDateForAlert(
           target,
           relatedItems,
@@ -2968,7 +2802,7 @@ $(function () {
       return;
     }
 
-    // PERBAIKAN: Cari purchasePlanDtlID dengan cara yang lebih robust
+    // Cari purchasePlanDtlID dengan cara yang lebih robust (fallback berlapis)
     let purchasePlanDtlID = null;
 
     // 1. Coba dari globalCalcCache
@@ -3178,7 +3012,7 @@ $(function () {
       }),
     );
 
-    //  Warning jika total persen bukan 100%
+    // Warning jika total persen bukan 100%
     if (Math.abs(totalPersen - 100) > 0.01) {
       $("#totalPersenCalc")
         .css("color", "red")
@@ -3195,7 +3029,7 @@ $(function () {
   }
 
   $("#addLineTableTengah").click(function () {
-    //  Cek baris terakhir hanya jika sudah ada baris aktif
+    // Cek baris terakhir hanya jika sudah ada baris aktif
     if (activeRows >= 1) {
       const lastRowData = allTableTengahData[allTableTengahData.length - 1];
 
@@ -3217,7 +3051,7 @@ $(function () {
       }
     }
 
-    //  Validasi vendor kosong
+    // Validasi vendor kosong
     const adaVendorKosong = kumpulanDataTableKiriKanan.some((vendorObj) => {
       return !vendorObj.vendorId || vendorObj.vendorId == 0;
     });
@@ -3227,7 +3061,7 @@ $(function () {
       return;
     }
 
-    //  Validasi baris kosong (jaga-jaga)
+    // Validasi baris kosong (jaga-jaga)
     const $rows = $("#tableTengah tr");
     let adaBarisKosong = false;
 
@@ -3251,7 +3085,7 @@ $(function () {
       tableKananCalc.style.visibility = "hidden";
     }
 
-    //  Tambah row tengah
+    // Tambah row tengah
     addRowTableTengah("tableTengah");
     renumberRows();
   });
@@ -3269,7 +3103,7 @@ $(function () {
     // Cek data terakhir dari array
     const lastData = allTableTengahData[allTableTengahData.length - 1];
 
-    //  OPTIMIZATION: Validasi dari array, jangan perlu cek DOM
+    // Validasi dari array, tidak perlu cek DOM
     const isComplete =
       lastData &&
       lastData.vendor &&
@@ -3819,7 +3653,7 @@ $(function () {
     );
 
     if (oldKiriData) {
-      //  CRITICAL FIX: Cek berapa banyak entries dengan oldKey
+      // Cek berapa banyak entries dengan oldKey
       const oldKeyEntriesCount = kumpulanDataTableKiriKanan.filter(
         (d) => d.rowId === oldKey,
       ).length;
@@ -3959,7 +3793,7 @@ $(function () {
     if (allTableTengahData[rowIndex]) {
       const oldVendorIdTemp = allTableTengahData[rowIndex].vendor;
 
-      //  PERBAIKAN: Jika vendor berubah, auto-increment batch SEBELUM mengubah vendor
+      // Jika vendor berubah, auto-increment batch sebelum vendor diubah
       let newBatchValue = oldBatch;
       if (
         oldVendorIdTemp > 0 &&
@@ -4051,26 +3885,6 @@ $(function () {
       var formattedDate = `${day}/${month}/${year}`;
       return formattedDate;
     }
-  }
-
-  function formatTgl(tanggalString) {
-    if (typeof tanggalString !== "string") {
-      console.error("Input harus berupa string.");
-      return null;
-    }
-    const tanggal = new Date(tanggalString);
-    let hari = tanggal.getDate();
-    let bulan = tanggal.getMonth() + 1;
-    let tahun = tanggal.getFullYear();
-
-    if (hari < 10) {
-      hari = "0" + hari;
-    }
-    if (bulan < 10) {
-      bulan = "0" + bulan;
-    }
-
-    return `${hari}/${bulan}/${tahun}`;
   }
 
   $(".btn-exit").click(function () {
@@ -4191,27 +4005,6 @@ $(function () {
         saveButton.prop("disabled", false).text("Save");
       }
     });
-
-  // Helper untuk error AJAX yang diperbaiki
-  function showAjaxError(section, xhr) {
-    console.error(`Error save ${section}:`, xhr);
-
-    let errorMessage = `Gagal Simpan ${section}:\n`;
-
-    // Cek apakah response adalah HTML (biasanya halaman error)
-    if (xhr.responseText && xhr.responseText.includes("<html>")) {
-      errorMessage +=
-        "Server mengembalikan halaman error. Periksa log server untuk detail lebih lanjut.";
-    } else if (xhr.responseJSON && xhr.responseJSON.message) {
-      errorMessage += xhr.responseJSON.message;
-    } else if (xhr.responseText) {
-      errorMessage += xhr.responseText;
-    } else {
-      errorMessage += "Terjadi kesalahan pada server.";
-    }
-
-    alert(errorMessage);
-  }
 
   function saveHeaderData(DocDate, ItemDesc, currID, rate) {
     const saveButton = $(".btn-save");
@@ -4352,49 +4145,6 @@ $(function () {
     else m += `HTTP ${xhr.status}: ${error || "Unknown error"}`;
     return m;
   }
-  // Fungsi untuk save table tengah
-  function saveTableTengah(purchasePlanID) {
-    const saveButton = $(".btn-save");
-    const blanketID = $("#blanketIdInput").val();
-
-    $.ajax({
-      url: BASE_URL + "scm/purchasing/purchase_order_plan/save",
-      type: "POST",
-      data: {
-        table_data: allTableTengahData,
-        purchasePlanID: purchasePlanID,
-        blanket_id: blanketID,
-      },
-      dataType: "json",
-      timeout: 30000,
-      success: function (tengahResponse) {
-        if (tengahResponse && tengahResponse.status === "success") {
-          // Lanjut ke save table kiri
-          saveTableKiri(purchasePlanID);
-        } else {
-          const errorMsg =
-            tengahResponse && tengahResponse.message
-              ? tengahResponse.message
-              : "Response tidak valid dari server";
-          alert("Fail save middle table: " + errorMsg);
-          refreshFinished();
-          saveButton.prop("disabled", false).text("Save");
-        }
-      },
-      error: function (xhr, status, error) {
-        console.error("AJAX GAGAL save table tengah!", {
-          status: status,
-          error: error,
-          responseText: xhr.responseText,
-          responseStatus: xhr.status,
-        });
-
-        showAjaxError("Table Tengah", xhr);
-        refreshFinished();
-        saveButton.prop("disabled", false).text("Save");
-      },
-    });
-  }
   function saveTableKiri(purchasePlanID, preDetailIds = null) {
     const saveButton = $(".btn-save");
 
@@ -4493,7 +4243,7 @@ $(function () {
     });
   }
 
-  //  IMPROVED: Konversi dataClassTableKiriKanan ke format yang benar
+  // Konversi dataClassTableKiriKanan ke format yang benar
   function convertTableKananDataToPlainObject(dataClassArray) {
     if (!Array.isArray(dataClassArray)) {
       console.error(
@@ -4505,7 +4255,7 @@ $(function () {
     }
 
     const result = dataClassArray.map((dataClass, index) => {
-      //  Buat plain object structure yang bisa di-serialize
+      // Buat plain object structure yang bisa di-serialize
       const plainObject = {
         namaVendor: dataClass.namaVendor || "",
         vendorId: dataClass.vendorId || 0,
@@ -4513,7 +4263,7 @@ $(function () {
         paymentDetails: [],
       };
 
-      //  Extract payment details dari arrays dalam dataClass
+      // Extract payment details dari arrays dalam dataClass
       if (dataClass.paymentDate && Array.isArray(dataClass.paymentDate)) {
         const paymentCount = dataClass.paymentDate.length;
 
@@ -4590,7 +4340,7 @@ $(function () {
       return;
     }
 
-    //  PERBAIKAN UTAMA: Konversi dataClass ke plain object
+    // Konversi dataClass ke plain object
     let allTableKananData = [];
 
     if (kumpulanDataTableKiriKanan && kumpulanDataTableKiriKanan.length > 0) {
@@ -4599,12 +4349,12 @@ $(function () {
           kumpulanDataTableKiriKanan,
         );
 
-        //  Validasi hasil konversi
+        // Validasi hasil konversi
         if (!allTableKananData || allTableKananData.length === 0) {
           console.warn(" Conversion resulted in empty data");
           allTableKananData = [];
         } else {
-          //  VALIDASI PENTING: Pastikan sudah dalam bentuk plain object
+          // Pastikan hasil sudah dalam bentuk plain object
           const firstItem = allTableKananData[0];
           if (
             firstItem &&
@@ -4638,14 +4388,14 @@ $(function () {
       '<i class="fa fa-spinner fa-spin"></i> Saving Payment Details...',
     );
 
-    //  Buat payload yang bersih
+    // Buat payload yang bersih
     const payload = {
       purchasePlanID: parseInt(purchasePlanID),
       arrListIDTableKiri: arrListIDTableKiri.map((id) => parseInt(id)),
       allTableKananData: allTableKananData,
     };
 
-    //  Test JSON serialization sebelum dikirim
+    // Test JSON serialization sebelum dikirim
     let jsonString;
     try {
       jsonString = JSON.stringify(payload);
@@ -4752,7 +4502,7 @@ $(function () {
           errorThrown: errorThrown,
         });
 
-        //  Detailed error parsing
+        // Detailed error parsing
         let errorMessage = "Error menyimpan payment details";
         let debugInfo = "";
 
@@ -4789,21 +4539,6 @@ $(function () {
     });
   }
 
-  //  FUNGSI DEBUG TAMBAHAN
-  function debugCurrentData() {
-    if (kumpulanDataTableKiriKanan && kumpulanDataTableKiriKanan.length > 0) {
-      kumpulanDataTableKiriKanan.forEach((item, index) => {});
-      try {
-        const converted = convertTableKananDataToPlainObject(
-          kumpulanDataTableKiriKanan,
-        );
-      } catch (error) {
-        console.error("Conversion failed:", error);
-      }
-    }
-  }
-
-  // Modified getBigDataTableKiri untuk error handling yang lebih baik
   function getBigDataTableKiri() {
     allTableKiriData = [];
 
@@ -4951,31 +4686,18 @@ $(function () {
     });
   });
 
-  function mapFormValueToInt(value) {
-    if (value === "All") return 1;
-    if (value === "Partial") return 2;
-    return null;
-  }
-
-  function mapAlertToInt(value) {
-    if (value === "Blanket PO") return 1;
-    if (value === "PO") return 2;
-    return null;
-  }
-
-  // updateTableKiriSummary();
   updateTotalQty();
   const $addLineButton = $("#addLineTableTengah");
   $addLineButton.prop("disabled", true);
 
-  $.when(loadItemOptions(), loadColorOptions())
+  loadColorOptions()
     .done(function () {
       $addLineButton.prop("disabled", false);
       updateTableKiriSummary();
     })
     .fail(function () {
       console.error(
-        "Failed to load all required options. Add Line button remains disabled.",
+        "Failed to load required options. Add Line button remains disabled.",
       );
       alert("ERROR when load data. Button 'Add Line' set to non-active.");
     });
