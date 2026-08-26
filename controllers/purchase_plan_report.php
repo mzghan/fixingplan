@@ -452,13 +452,6 @@ private function generate_52_weeks_backward($from_year, $from_week) {
               }
           }
 
-          // Validasi urutan tanggal antar batch hanya relevan untuk shipment
-          // plan biasa (Closed=0). Untuk entry Blanket (Closed=1) atau PO
-          // (Closed=2), validasi ini salah sasaran karena
-          // validate_batch_date_order() membandingkan terhadap batch plan
-          // yang masih Closed=0 saja - kalau ikut diterapkan ke baris
-          // campuran plan/blanket/PO, perubahan tanggal pada entry
-          // blanket/PO bisa ditolak secara keliru dan gagal tersimpan.
           if ((int)$closed === 0) {
               $dateValidation = $this->pom->validate_batch_date_order(
                   $purchasePlanID,
@@ -3081,8 +3074,13 @@ public function getPurchasePlanDtlPayment()
           $itemID = $change['ItemID'] ?? null;
           $itemUnitID = $change['ItemUnitID'] ?? null;
 
-          // Fetch source shipment data untuk reference
-          // Deteksi isPOPlan akan dilakukan PER WEEK (di dalam loop)
+          // Fetch source shipment data untuk reference (fallback default untuk baris ini).
+          // PENTING: satu baris hasil grouping (ItemDesc+Vendor+Color sama) bisa berisi
+          // CAMPURAN beberapa entry dengan tipe berbeda (plan biasa, Blanket, PO) yang
+          // masing-masing punya ID & tabel sumber sendiri. Nilai $sourceShipment/
+          // $sourceShipmentID di sini HANYA dipakai sebagai fallback default baris;
+          // resolusi yang benar per minggu (sesuai tipe minggu tsb) dilakukan di
+          // dalam loop $changedWeeks di bawah.
           $sourceShipment = null;
           
           // First, try to determine if this is PO or Blanket based on explicit IDs
@@ -3182,25 +3180,67 @@ public function getPurchasePlanDtlPayment()
 
               log_message('info', "  Week {$weekIdx}: Mode={$mode}, Week={$weekLabel}, isPOPlan={$isPOPlan}, DocID={$docID}, Type={$poType}, Qty: {$qtyExisting}->{$qtyImported}, Shipments=" . count($existingShipments));
 
+              // Resolve ID & row sumber yang BENAR untuk minggu ini secara spesifik.
+              // Satu baris (hasil grouping ItemDesc+Vendor+Color) bisa berisi
+              // campuran plan biasa, Blanket, dan PO pada minggu-minggu berbeda -
+              // masing-masing punya tabel sumber & ID sendiri. $sourceShipment/
+              // $sourceShipmentID di level baris hanya representasi salah satu
+              // tipe saja, jadi tidak boleh dipakai langsung untuk minggu dengan
+              // tipe berbeda.
+              $weekShipmentID = $sourceShipmentID;
+              if (!empty($existingShipments) && is_array($existingShipments)) {
+                foreach ($existingShipments as $shipment) {
+                  if (!empty($shipment['shipmentId'])) {
+                    $weekShipmentID = $shipment['shipmentId'];
+                    break;
+                  }
+                }
+              }
+
+              $weekItemID = $sourceShipmentData['ItemID'] ?? $itemID;
+              $weekItemUnitID = $sourceShipmentData['ItemUnitID'] ?? $itemUnitID;
+              $weekSourceShipment = $sourceShipment;
+              // Row-level $sourceShipment berasal dari tPOPlan kalau ia punya DocID
+              // tapi tidak punya Vendor (tPOPlan tidak menyimpan Vendor).
+              $sourceIsFromPOPlan = isset($sourceShipment['DocID']) && !array_key_exists('Vendor', $sourceShipment);
+
+              if ($isPOPlan) {
+                $rowLevelDocID = !empty($poID) ? $poID : (!empty($blanketID) ? $blanketID : null);
+                if (!$sourceIsFromPOPlan || (int)$docID !== (int)$rowLevelDocID) {
+                  $weekSourceShipment = $this->db->select('*')
+                    ->where('DocID', $docID)
+                    ->where('ItemID', $weekItemID)
+                    ->where('ItemUnitID', $weekItemUnitID)
+                    ->order_by('ID', 'DESC')
+                    ->limit(1)
+                    ->get('tPOPlan')
+                    ->row_array();
+                }
+                if (!empty($weekSourceShipment['ID'])) {
+                  $weekShipmentID = $weekSourceShipment['ID'];
+                }
+              } else {
+                if ($sourceIsFromPOPlan || (int)$weekShipmentID !== (int)$sourceShipmentID) {
+                  $weekSourceShipment = $this->db->select('*')
+                    ->where('ID', $weekShipmentID)
+                    ->get('dbtPurchasePlanDtlShipment')
+                    ->row_array();
+                }
+              }
+
+              if (!$weekSourceShipment) {
+                throw new Exception("Source data not found for week {$weekLabel} (ID {$weekShipmentID})");
+              }
+
               // Route ke handler sesuai mode
               switch ($mode) {
                 case 'insert':
-                  $this->_handle_insert_mode($sourceShipment, $purchasePlanID, $weekLabel, $qtyImported, $shipmentDateImported, $currentUserID, $isPOPlan, $docID, $poType);
+                  $this->_handle_insert_mode($weekSourceShipment, $purchasePlanID, $weekLabel, $qtyImported, $shipmentDateImported, $currentUserID, $isPOPlan, $docID, $poType);
                   $results_by_mode['insert']++;
                   break;
 
                 case 'update_same':
                 case 'overwrite_qty':
-                  $weekShipmentID = $sourceShipmentID;
-                  if (!empty($existingShipments) && is_array($existingShipments)) {
-                    foreach ($existingShipments as $shipment) {
-                      if (!empty($shipment['shipmentId'])) {
-                        $weekShipmentID = $shipment['shipmentId'];
-                        break;
-                      }
-                    }
-                  }
-                  
                   $this->_handle_update_same_mode($weekShipmentID, $qtyImported, $weekLabel, $currentUserID, $isPOPlan, $docID);
                   $results_by_mode[$mode]++;
                   break;
@@ -3215,23 +3255,22 @@ public function getPurchasePlanDtlPayment()
                   
                   log_message('info', "   FULL_MOVE: Using shipment_date_move_to={$dateForFullMove}, week_move_to={$weekForFullMove}");
                   
-                  $poRowID = $isPOPlan ? $sourceShipment['ID'] : $sourceShipmentID;
-                  $this->_handle_full_move_mode($poRowID, $dateForFullMove, $weekForFullMove, $currentUserID, $isPOPlan, $docID, $sourceShipment);
+                  $this->_handle_full_move_mode($weekShipmentID, $dateForFullMove, $weekForFullMove, $currentUserID, $isPOPlan, $docID, $weekSourceShipment);
                   $results_by_mode['full_move']++;
                   break;
 
                 case 'partial_split':
-                  $this->_handle_partial_split_mode($sourceShipmentID, $sourceShipment, $purchasePlanID, $qtyImported, $qtyExisting, $shipmentDateImported, $weekLabel, $currentUserID, $isPOPlan, $docID);
+                  $this->_handle_partial_split_mode($weekShipmentID, $weekSourceShipment, $purchasePlanID, $qtyImported, $qtyExisting, $shipmentDateImported, $weekLabel, $currentUserID, $isPOPlan, $docID);
                   $results_by_mode['partial_split']++;
                   break;
 
                 case 'override':
-                  $this->_handle_override_mode($sourceShipmentID, $sourceShipment, $purchasePlanID, $qtyImported, $shipmentDateImported, $weekLabel, $currentUserID, $isPOPlan, $docID);
+                  $this->_handle_override_mode($weekShipmentID, $weekSourceShipment, $purchasePlanID, $qtyImported, $shipmentDateImported, $weekLabel, $currentUserID, $isPOPlan, $docID);
                   $results_by_mode['override']++;
                   break;
 
                 case 'delete':
-                  $this->_handle_delete_mode($sourceShipmentID, $weekLabel, $currentUserID, $isPOPlan, $docID, $existingShipments);
+                  $this->_handle_delete_mode($weekShipmentID, $weekLabel, $currentUserID, $isPOPlan, $docID, $existingShipments);
                   $results_by_mode['delete']++;
                   break;
 
@@ -3293,6 +3332,7 @@ public function getPurchasePlanDtlPayment()
       ]);
     }
   }
+
 
 
   private function _handle_insert_mode($sourceShipment, $purchasePlanID, $weekLabel, $qtyImported, $shipmentDate, $currentUserID, $isPOPlan = false, $docID = null, $poType = null)
