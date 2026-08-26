@@ -299,42 +299,6 @@ class purchase_order_m extends CI_Model
         return true;
     }
 
-    // public function insert_payment_history($purchasePlanDtlID, $data_main, $userID)
-    // {
-    //     $history_data = [
-    //         // Data dari tabel utama (warna kuning di gambar)
-    //         'PurchasePlanDtlID' => $purchasePlanDtlID,
-    //         'PaymentDate'       => $data_main['PaymentDate'],
-    //         'Notes'             => $data_main['Notes'],
-    //         'Percent'           => $data_main['Percent'],
-    //         'FromValue'         => $data_main['FromValue'],
-    //         'Alert'             => $data_main['Alert'],
-    //         'Term'              => $data_main['Term'],
-    //         'OACredit'          => $data_main['OACredit'],
-            
-    //         // Data khusus history (warna putih di gambar)
-    //         'StartDate'         => date('Y-m-d H:i:s'),
-    //         'EditDate'          => date('Y-m-d H:i:s'),
-    //         'EditUserID'        => $userID,
-            
-    //         // Data yang bisa null (warna abu-abu di gambar)
-    //         'EndDate'           => null
-    //     ];
-
-    //     $this->db->insert('dbtPurchasePlanDtlPaymentHistory', $history_data);
-
-    //     $db_error = $this->db->error();
-    //     if (!empty($db_error['message'])) {
-    //         log_message('error', 'Insert history gagal: ' . json_encode($db_error));
-    //         return false;
-    //     }
-
-    //     return true;
-
-    // }
-
-
-// Method alternatif dengan error handling yang lebih baik
 public function insert_purchase_plan_dtl($data)
 {
     try {
@@ -432,8 +396,16 @@ public function check_table_structure()
         return $result;
     }
 
-    public function getPOPlanShipmentsByDocID($docId)
+    public function getPOPlanShipmentsByDocID($docId, $year_filter = '')
     {
+        $params = [$docId];
+        $year_condition = '';
+
+        if (!empty($year_filter)) {
+            $year_condition = ' AND YEAR(t.ETD) = ?';
+            $params[] = $year_filter;
+        }
+
         $sql = "
             SELECT 
                 t.ID,
@@ -447,9 +419,9 @@ public function check_table_structure()
                 t.ReffShipmentID
             FROM tPOPlan t
             LEFT JOIN dbtItemDoc d ON d.ID = t.DocID
-            WHERE d.void = 0 AND t.DocID = ?
+            WHERE d.void = 0 AND t.DocID = ?" . $year_condition . "
         ";
-        return $this->db->query($sql, [$docId])->result_array();
+        return $this->db->query($sql, $params)->result_array();
     }
 
 
@@ -548,8 +520,13 @@ public function check_table_structure()
                 $filter_params[] = $vendor_id_filter;
             }
             // Year filter - HATI-HATI: YEAR(NULL) = NULL
+            // Untuk baris Blanket (Closed=1) dan PO (Closed=2), data mingguan yang
+            // ditampilkan diambil dari tPOPlan (ETD), bukan dari ppsh.ShipmentDate,
+            // jadi baris tersebut tetap diloloskan di sini dan difilter per-tahun
+            // di level tPOPlan (lihat getPOPlanShipmentsByDocID) agar filter tahun
+            // konsisten berlaku untuk plan, blanket, maupun PO.
             if (!empty($year_filter)) {
-                $filter_conditions[] = "YEAR(ISNULL(ppsh.ShipmentDate, GETDATE())) = ?";
+                $filter_conditions[] = "(YEAR(ISNULL(ppsh.ShipmentDate, GETDATE())) = ? OR ppsh.Closed IN (1, 2))";
                 $filter_params[] = $year_filter;
             }
 
@@ -690,7 +667,7 @@ public function check_table_structure()
             
             $po_shipments_by_doc = [];
             foreach ($all_poids as $docId) {
-                $poShipments = $this->getPOPlanShipmentsByDocID($docId);
+                $poShipments = $this->getPOPlanShipmentsByDocID($docId, $year_filter);
                 $po_shipments_by_doc[$docId] = $poShipments;
             }
             // Ambil semua PurchasePlanID dari raw_data
@@ -739,21 +716,6 @@ public function check_table_structure()
                 $existingShipmentIds[$row['ShipmentID']] = true;
 
                 // Buat key unik berdasarkan kolom yang ingin digabung
-                // $itemCode = trim((string)$row['ItemCode']); // pastikan string aman
-
-                // $group_key_base = $row['PurchasePlanID'] . '|' . 
-                //             $row['ItemDesc'] . '|' . 
-                //             $row['Vendor'] . '|' . 
-                //             $row['Color'] . '|' .
-                //             $row['ItemID'] . '|' . 
-                //             ($row['ItemUnitID'] ?? ''); 
-                // // Jika ItemCode diisi, tambahkan ke key agar dipisah
-                // if ($itemCode !== '' && $itemCode !== null) {
-                //     $group_key = $group_key_base . '|' . $itemCode;
-                // } else {
-                //     $group_key = $group_key_base; // tetap gabung kalau kosong
-                // }
-
                 $group_key = implode('|', [
                     (int)$row['PurchasePlanID'],
                     trim($row['ItemDesc']),
@@ -914,7 +876,11 @@ public function check_table_structure()
                         }
 
                         // Jika tidak ada matching PO, gunakan original shipment ID
-                        if (empty($matchingPos)) {
+                        // (tetap hormati filter tahun jika sedang aktif)
+                        $blanketFallbackYearOk = empty($year_filter)
+                            || (!empty($row['ShipmentDate']) && (int)date('Y', strtotime($row['ShipmentDate'])) === (int)$year_filter);
+
+                        if (empty($matchingPos) && $blanketFallbackYearOk) {
                             $shipmentId = (int)$row['ShipmentID'];
                             $qty = (int)$row['Qty'];
                             $shipmentDate = $row['ShipmentDate'];
@@ -1027,6 +993,16 @@ public function check_table_structure()
                     }
                     $newWeekKey = 'ww' . (int)$newWeekNum;
 
+                    // Untuk fallback PO (Closed=2) tanpa match di tPOPlan, tetap
+                    // hormati filter tahun yang sedang aktif.
+                    $genericFallbackYearOk = empty($year_filter)
+                        || (int)$row['Closed'] !== 2
+                        || (!empty($shipmentDate) && (int)date('Y', strtotime($shipmentDate)) === (int)$year_filter);
+
+                    if (!$genericFallbackYearOk) {
+                        continue;
+                    }
+
                     if ($newWeekKey !== $week_key) {
                         $week_key = $newWeekKey;
                         if (!isset($grouped_data[$group_key]['weekly_data'][$week_key])) {
@@ -1057,12 +1033,12 @@ public function check_table_structure()
 
             foreach ($grouped_data as $group_key => &$group) {
                 if ($group['has_po'] && !$group['has_blanket']) {
-                    // Semua shipment PO → full PO status
+                    // Semua shipment PO -> full PO status
                     $group['Closed'] = 2;
                 } elseif ($group['has_po'] && $group['has_blanket']) {
                     $group['Closed'] = 2;  
                 } else {
-                    // Hanya blanket → blanket status
+                    // Hanya blanket -> blanket status
                     $group['Closed'] = 1;
                 }
             }
@@ -1320,9 +1296,6 @@ public function check_table_structure()
                     }
                 }
             }
-            // Convert associative array back to indexed array
-            // return array_values($grouped_data);
-
             $result = array_values($grouped_data);
             $last5 = array_slice($result, -5);
             return [
@@ -1414,7 +1387,7 @@ public function check_table_structure()
             ->where('Vendor', $vendor)
             ->where('Batch', $batch)
             ->where('Void', 0)
-            ->order_by('ID', 'DESC')  // ← Ambil ID terbesar (paling baru)
+            ->order_by('ID', 'DESC')  // <- Ambil ID terbesar (paling baru)
             ->limit(1)
             ->get()
             ->row();
@@ -3881,9 +3854,6 @@ $shipment_detail = $this->db->query($sql_shipment, [
             if ($result[0]['DiscountID'] > 0) {
                 $returnData['docData']['DiscountDescription'] = $this->getDiscDesc($result[0]['DiscountID']);
             }
-            // if ($result[0]['TaxID'] > 0) {
-            //     $returnData['docData']['TaxDescription'] = $this->getTaxDesc($result[0]['TaxID']);
-            // }
             if ($result[0]['TermID']) {
                 $returnData['docData']['termDesc'] = $this->getTermName($result[0]['TermID']);
             }

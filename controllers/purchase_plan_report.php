@@ -87,7 +87,7 @@ public function get_purchase_plan_data()
     $plan_group_filter       = $this->input->get('planGroupId', TRUE);
 
     if (!empty($year_filter)) {
-        //  Kalau user pilih tahun tertentu → WW1-WW52 tahun itu
+        //  Kalau user pilih tahun tertentu -> WW1-WW52 tahun itu
         $week_range = $this->generate_full_year_weeks((int)$year_filter);
         
         $latest_week_info = [
@@ -96,7 +96,7 @@ public function get_purchase_plan_data()
         ];
         
     } else {
-        //  Kalau tidak ada filter year → 52 minggu mundur dari data terakhir
+        //  Kalau tidak ada filter year -> 52 minggu mundur dari data terakhir
         $query = "
             SELECT TOP 1
                 YEAR(ShipmentDate) as year,
@@ -422,7 +422,7 @@ private function generate_52_weeks_backward($from_year, $from_week) {
           $shipment_date_awal = $s['shipment_date_awal'] ?? '';
           $qty_edit = (int) ($s['qty_edit'] ?? 0);
           $shipment_date_edit = $s['shipment_date_edit'] ?? '';
-          $mode = $s['mode'] ?? '';
+          $mode = strtolower(trim($s['mode'] ?? ''));
           $is_new = (int) ($s['is_new'] ?? 0);
           $poID = $s['POID'] ?? null;
           $blanketID = $s['BlanketID'] ?? null;
@@ -452,16 +452,25 @@ private function generate_52_weeks_backward($from_year, $from_week) {
               }
           }
 
-          $dateValidation = $this->pom->validate_batch_date_order(
-              $purchasePlanID,
-              $batch,
-              $shipment_date_edit
-          );
+          // Validasi urutan tanggal antar batch hanya relevan untuk shipment
+          // plan biasa (Closed=0). Untuk entry Blanket (Closed=1) atau PO
+          // (Closed=2), validasi ini salah sasaran karena
+          // validate_batch_date_order() membandingkan terhadap batch plan
+          // yang masih Closed=0 saja - kalau ikut diterapkan ke baris
+          // campuran plan/blanket/PO, perubahan tanggal pada entry
+          // blanket/PO bisa ditolak secara keliru dan gagal tersimpan.
+          if ((int)$closed === 0) {
+              $dateValidation = $this->pom->validate_batch_date_order(
+                  $purchasePlanID,
+                  $batch,
+                  $shipment_date_edit
+              );
 
-          if (!$dateValidation['valid']) {
-              $errorCount++;
-              $errors[] = $dateValidation['message'];
-              continue;
+              if (!$dateValidation['valid']) {
+                  $errorCount++;
+                  $errors[] = $dateValidation['message'];
+                  continue;
+              }
           }
 
           $updated = false;
@@ -1640,7 +1649,7 @@ public function updateTableKiri()
                              ->where('Vendor', $vendorID)
                              ->where('Batch', $oldBatch)
                              ->update('dbtPurchasePlanDtlShipment', ['Batch' => $batchValue]);
-                    log_message('debug', "SYNC: Updated shipment batch for Plan={$purchasePlanID}, Vendor={$vendorID}, OldBatch={$oldBatch} → NewBatch={$batchValue}");
+                    log_message('debug', "SYNC: Updated shipment batch for Plan={$purchasePlanID}, Vendor={$vendorID}, OldBatch={$oldBatch} -> NewBatch={$batchValue}");
                 }
                 
                 $mapping[$r['tempRowId']] = $DtlID;
@@ -2004,7 +2013,7 @@ public function updateTableTengah()
             $this->db->where('ID', $purchasePlanID);
             $this->db->delete('dbtPurchasePlan');
             
-            log_message('info', "✓ Full cascade delete completed for PurchasePlanID {$purchasePlanID}");
+            log_message('info', "Full cascade delete completed for PurchasePlanID {$purchasePlanID}");
         }
         
     } catch (Exception $e) {
@@ -2208,10 +2217,10 @@ private function _deleteDtlCascade($dtlID)
         if ($remainingDetails['cnt'] == 0) {
             $this->db->where('ID', $purchasePlanID);
             $this->db->delete('dbtPurchasePlan');
-            log_message('info', "✓ Master Plan {$purchasePlanID} deleted (no details left)");
+            log_message('info', "Master Plan {$purchasePlanID} deleted (no details left)");
         }
         
-        log_message('info', "✓ Detail {$dtlID} and related data deleted successfully");
+        log_message('info', "Detail {$dtlID} and related data deleted successfully");
         
     } catch (Exception $e) {
         log_message('error', "Error deleting detail {$dtlID}: " . $e->getMessage());
@@ -2379,7 +2388,7 @@ public function update_payment_calc_summary()
 
     foreach ($resultRows as $r) {
 
-        // ubah tanggal format dd-mm-yyyy → yyyy-mm-dd
+        // ubah tanggal format dd-mm-yyyy -> yyyy-mm-dd
         $date = null;
         if (!empty($r['paymentDate'])) {
             $dt = DateTime::createFromFormat('d-m-Y', $r['paymentDate']);
@@ -2422,114 +2431,6 @@ public function update_payment_calc_summary()
         ]));
 }
 
-// public function insertSplitPayment()
-// {
-//     if ($this->input->method() !== 'post') {
-//         echo json_encode(['status' => 'error', 'message' => 'Gunakan metode POST.']);
-//         return;
-//     }
-
-//     $rawInput = json_decode($this->input->raw_input_stream, true);
-//     $rows = isset($rawInput[0]) ? $rawInput : [$rawInput];
-
-//     if (empty($rows)) {
-//         echo json_encode(['status' => 'error', 'message' => 'Data pembayaran kosong.']);
-//         return;
-//     }
-
-//     $this->db->trans_begin();
-
-//     try {
-//         foreach ($rows as $r) {
-//             $paymentID = isset($r['PaymentID']) ? (int)$r['PaymentID'] : 0;
-//             $purchasePlanDtlID = $r['PurchasePlanDtlID'] ?? $r['purchasePlanDtlId'] ?? null;
-
-//             //  FIX: JIKA BELUM ADA DTL ID, COBA BUAT DTL BARU
-//             if (!$purchasePlanDtlID) {
-//                 // Data untuk create DTL baru dari frontend
-//                 $tempRowId = $r['tempRowId'] ?? null;
-//                 $shipmentDate = $r['shipmentDate'] ?? null;
-//                 $vendorId = $r['vendorId'] ?? null;
-//                 $purchasePlanID = $r['purchasePlanID'] ?? null;
-
-//                 // Jika info shipment lengkap, buat DTL baru
-//                 if ($shipmentDate && $vendorId && $purchasePlanID) {
-//                     log_message('debug', "🆕 Creating new DTL for shipment: {$shipmentDate}, vendor: {$vendorId}");
-
-//                     $newDtlData = [
-//                         'PurchasePlanID' => (int)$purchasePlanID,
-//                         'VendorID' => (int)$vendorId,
-//                         'ShipmentDate' => $shipmentDate,
-//                         'Batch' => $r['batch'] ?? null,
-//                         'CreatedDate' => date('Y-m-d H:i:s'),
-//                         'CreatedUserID' => $this->userid,
-//                     ];
-
-//                     $this->db->insert('dbtPurchasePlanDtl', $newDtlData);
-//                     $purchasePlanDtlID = $this->db->insert_id();
-
-//                     log_message('debug', " New DTL created: ID={$purchasePlanDtlID}");
-
-//                 } else {
-//                     // ❌ DATA TIDAK LENGKAP
-//                     log_message('debug', '⏭ Skip split insert - missing shipment info for new DTL');
-//                     continue;
-//                 }
-//             }
-
-//             // 🔹 Jika data hasil split (duplikasi), abaikan PaymentID lama
-//             $isCloned = !empty($r['isCloned']) && $r['isCloned'] === true;
-//             if ($isCloned && $paymentID > 0) {
-//                 log_message('debug', "🆕 Hasil split terdeteksi (PaymentID lama: {$paymentID}) → reset jadi baru");
-//                 unset($r['PaymentID']);
-//                 $paymentID = 0;
-//             }
-
-//             // 🔹 Data untuk insert ke tabel utama
-//             $dataMain = [
-//                 'PurchasePlanDtlID' => (int)$purchasePlanDtlID,
-//                 'PaymentDate'       => $r['PaymentDate'] ?? null,
-//                 'Notes'             => $r['Notes'] ?? null,
-//                 '[Percent]'         => isset($r['Percent']) ? (float)$r['Percent'] : null,
-//                 'FromValue'         => isset($r['FromValue']) ? (float)$r['FromValue'] : null,
-//                 '[Alert]'           => isset($r['Alert']) ? (int)$r['Alert'] : null,
-//                 'Term'              => isset($r['Term']) ? (int)$r['Term'] : null,
-//                 'OACredit'          => isset($r['OACredit']) ? (int)$r['OACredit'] : null,
-//             ];
-
-//             // 🔹 INSERT payment baru (karena hasil split selalu baru)
-//             $this->db->insert('dbtPurchasePlanDtlPayment', $dataMain);
-//             $newPaymentID = $this->db->insert_id();
-
-//             // 🔹 INSERT histori untuk payment baru
-//             $historyData = array_merge($dataMain, [
-//                 'PaymentID'  => $newPaymentID,
-//                 'StartDate'  => date('Y-m-d H:i:s'),
-//                 'EditDate'   => date('Y-m-d H:i:s'),
-//                 'EditUserID' => $this->userid,
-//             ]);
-
-//             $this->db->insert('dbtPurchasePlanDtlPaymentHistory', $historyData);
-
-//             log_message('debug', " Split Payment inserted (baru): PaymentID={$newPaymentID}, Dtl={$purchasePlanDtlID}");
-//         }
-
-//         if ($this->db->trans_status() === false) {
-//             $this->db->trans_rollback();
-//             echo json_encode(['status' => 'error', 'message' => 'Gagal menyimpan payment hasil split.']);
-//             return;
-//         }
-
-//         $this->db->trans_commit();
-//         echo json_encode(['status' => 'success', 'message' => 'Payment hasil split berhasil disimpan.']);
-
-//     } catch (Exception $e) {
-//         $this->db->trans_rollback();
-//         log_message('error', '❌ Error in insertSplitPayment: ' . $e->getMessage());
-//         echo json_encode(['status' => 'error', 'message' => 'Kesalahan internal: ' . $e->getMessage()]);
-//     }
-// }
-
 
   // tutup update table kanan
 
@@ -2559,10 +2460,10 @@ public function getPurchasePlanDtlPayment()
             ]));
     }
 
-    // 🔹 1. Ambil payment dari tabel utama
+    // 1. Ambil payment dari tabel utama
     $payments = $this->pom->getDataTableKanan($purchasePlanDtlID);
 
-    // 🔹 2. Kalau kosong & autoDuplicate aktif → ambil dari parent
+    // 2. Kalau kosong & autoDuplicate aktif -> ambil dari parent
     if (empty($payments) && $autoDuplicate) {
         // Cari shipment lain dalam PurchasePlanID yang sama, vendor sama, dan ID beda
         $parentDtl = $this->db->select('TOP 1 d2.ID AS ParentDtlID')
@@ -2950,13 +2851,13 @@ public function getPurchasePlanDtlPayment()
                 $this->db->where('ID', $existing->ID)
                   ->update('dbtPurchasePlanDtlShipmentWeek', $week_data);
                 
-                log_message('info', "  ✓ Updated ID {$existing->ID}: ShipmentID={$shipmentID}, WeekID={$weekLabel}, Qty={$qty}");
+                log_message('info', "  Updated ID {$existing->ID}: ShipmentID={$shipmentID}, WeekID={$weekLabel}, Qty={$qty}");
               } else {
                 // Insert
                 $this->db->insert('dbtPurchasePlanDtlShipmentWeek', $week_data);
                 $insertedID = $this->db->insert_id();
                 
-                log_message('info', "  ✓ Inserted ID {$insertedID}: ShipmentID={$shipmentID}, WeekID={$weekLabel}, Qty={$qty}");
+                log_message('info', "  Inserted ID {$insertedID}: ShipmentID={$shipmentID}, WeekID={$weekLabel}, Qty={$qty}");
               }
 
               $processed_count++;
@@ -3130,7 +3031,7 @@ public function getPurchasePlanDtlPayment()
 
             // Buat Purchase Plan header baru
             $newPurchasePlanID = $this->_create_new_purchase_plan($itemDesc, $currentUserID);
-            log_message('info', "  ✓ Purchase Plan baru dibuat: ID={$newPurchasePlanID}");
+            log_message('info', "  Purchase Plan baru dibuat: ID={$newPurchasePlanID}");
 
             // Process shipment untuk baris baru
             foreach ($changedWeeks as $weekIdx => $weekChange) {
@@ -3154,9 +3055,9 @@ public function getPurchasePlanDtlPayment()
                     $weekLabel,
                     $currentUserID
                   );
-                  log_message('info', "  ✓ Shipment created for new plan");
+                  log_message('info', "  Shipment created for new plan");
                 }
-              } catch (Exception $shipmentEx) {
+              } catch (Throwable $shipmentEx) {
                 $errors[] = "New row week {$weekLabel}: " . $shipmentEx->getMessage();
                 log_message('error', "New shipment error: " . $shipmentEx->getMessage());
               }
@@ -3232,7 +3133,7 @@ public function getPurchasePlanDtlPayment()
           // Process setiap changed week dengan mode detection PER WEEK
           foreach ($changedWeeks as $weekIdx => $weekChange) {
             try {
-              $mode = $weekChange['mode'] ?? 'unknown';
+              $mode = strtolower(trim($weekChange['mode'] ?? 'unknown'));
               $weekLabel = $weekChange['week'] ?? '';
               $qtyImported = (int)($weekChange['qty_imported'] ?? 0);
               $qtyExisting = (int)($weekChange['qty_existing'] ?? 0);
@@ -3279,7 +3180,7 @@ public function getPurchasePlanDtlPayment()
                 log_message('info', "    Week {$weekLabel}: Detected as BLANKET (closed=1 fallback)");
               }
 
-              log_message('info', "  Week {$weekIdx}: Mode={$mode}, Week={$weekLabel}, isPOPlan={$isPOPlan}, DocID={$docID}, Type={$poType}, Qty: {$qtyExisting}→{$qtyImported}, Shipments=" . count($existingShipments));
+              log_message('info', "  Week {$weekIdx}: Mode={$mode}, Week={$weekLabel}, isPOPlan={$isPOPlan}, DocID={$docID}, Type={$poType}, Qty: {$qtyExisting}->{$qtyImported}, Shipments=" . count($existingShipments));
 
               // Route ke handler sesuai mode
               switch ($mode) {
@@ -3340,13 +3241,13 @@ public function getPurchasePlanDtlPayment()
 
               log_message('info', " Mode {$mode} processed successfully");
 
-            } catch (Exception $weekEx) {
+            } catch (Throwable $weekEx) {
               $errors[] = "Week {$weekLabel} ({$mode}): " . $weekEx->getMessage();
               log_message('error', "Week processing error: " . $weekEx->getMessage());
             }
           }
 
-        } catch (Exception $changeEx) {
+        } catch (Throwable $changeEx) {
           $errors[] = "Change {$changeIdx}: " . $changeEx->getMessage();
           log_message('error', "Change processing error: " . $changeEx->getMessage());
         }
@@ -3372,7 +3273,7 @@ public function getPurchasePlanDtlPayment()
         'debug_logs' => $debugLogs
       ]);
 
-    } catch (Exception $e) {
+    } catch (Throwable $e) {
       $this->db->trans_rollback();
       
       $exceptionMsg = $e->getMessage();
@@ -3580,7 +3481,7 @@ public function getPurchasePlanDtlPayment()
       ];
       $this->db->insert('dbtPurchasePlanDtlShipmentHistory', $historyData);
 
-      log_message('info', " UPDATE_SAME: Shipment {$sourceShipmentID} qty updated {$oldQty} → {$newQty}");
+      log_message('info', " UPDATE_SAME: Shipment {$sourceShipmentID} qty updated {$oldQty} -> {$newQty}");
     }
   }
 
@@ -3993,9 +3894,9 @@ public function getPurchasePlanDtlPayment()
             ['ID' => $shipmentIDToDelete]
           );
 
-          log_message('info', "   ✓ Shipment {$shipmentIDToDelete} deleted from all 3 tables");
+          log_message('info', "   Shipment {$shipmentIDToDelete} deleted from all 3 tables");
         } else {
-          log_message('warn', "   ⚠ Shipment {$shipmentIDToDelete} not found for deletion");
+          log_message('warn', "   Shipment {$shipmentIDToDelete} not found for deletion");
         }
       }
     }
@@ -4113,13 +4014,6 @@ public function getPurchasePlanDtlPayment()
         $debugLogs[] = '[' . strtoupper($level) . '] ' . $msg;
       };
 
-      // Log request info
-      // $log('info', "=== EXPORT EXCEL REQUEST START ===");
-      // $log('info', "Method: " . $_SERVER['REQUEST_METHOD']);
-      // $log('info', "Content-Type: " . ($_SERVER['CONTENT_TYPE'] ?? 'NOT SET'));
-      // $log('info', "Content-Length: " . ($_SERVER['CONTENT_LENGTH'] ?? '0'));
-      // $log('info', "URL: " . $_SERVER['REQUEST_URI']);
-
       // Get JSON data using multiple methods
       $json = null;
 
@@ -4188,7 +4082,7 @@ public function getPurchasePlanDtlPayment()
       }
       unset($row); // Unset reference
 
-      $log('info', "✓ Validation passed. Rows: " . count($rows) . ", Headers: " . count($headerRightData));
+      $log('info', "Validation passed. Rows: " . count($rows) . ", Headers: " . count($headerRightData));
 
       // Extract unique vendors dari data (untuk dropdown validation)
       $vendorList = $this->_extractVendorList($rows);
@@ -4211,7 +4105,7 @@ public function getPurchasePlanDtlPayment()
       
       // Get range string untuk DataValidation (misal: __vendors!$A$1:$A$25 jika 25 vendors)
       $vendorRangeRef = '__vendors!$A$1:$A$' . count($vendorList);
-      $log('info', "✓ Created hidden vendor sheet with " . count($vendorList) . " vendors, range: {$vendorRangeRef}");
+      $log('info', "Created hidden vendor sheet with " . count($vendorList) . " vendors, range: {$vendorRangeRef}");
 
       // Setup header kiri (static)
       $headerLeft = ['Vendor', 'Item Desc', 'Color'];
@@ -4386,7 +4280,7 @@ public function getPurchasePlanDtlPayment()
           $validation->setFormula1($vendorRangeRef);
           
           $sheet->getCell('E' . $dataRow)->setDataValidation($validation);
-          $log('info', "  ✓ Applied vendor dropdown to E{$dataRow} (NEW row) with {$vendorRangeRef}");
+          $log('info', "  Applied vendor dropdown to E{$dataRow} (NEW row) with {$vendorRangeRef}");
         }
 
         // Column H+: Week data (shifted because of new VendorID column)
@@ -4397,7 +4291,7 @@ public function getPurchasePlanDtlPayment()
           
           // Debug first row's week matching
           if ($idx === 0 && $colIdx < 5) {
-            $matchDebug[] = "Header '{$wwKey}' → Qty: '{$qtyData['qty']}'";
+            $matchDebug[] = "Header '{$wwKey}' -> Qty: '{$qtyData['qty']}'";
           }
           
           $sheet->setCellValue($colLetter . $dataRow, $qtyData['qty']);
@@ -4498,7 +4392,7 @@ public function getPurchasePlanDtlPayment()
           $sheet->getCell('E' . $emptyRow)->setDataValidation($validation);
         }
         
-        $log('info', "✓ Applied vendor dropdown to empty rows E{$emptyRowsStart}:E{$emptyRowsEnd} using {$vendorRangeRef}");
+        $log('info', "Applied vendor dropdown to empty rows E{$emptyRowsStart}:E{$emptyRowsEnd} using {$vendorRangeRef}");
       }
 
       // Apply ALL BORDERS to entire used range (BEST PRACTICE)
@@ -4512,7 +4406,7 @@ public function getPurchasePlanDtlPayment()
         ->setBorderStyle(\PhpOffice\PhpSpreadsheet\Style\Border::BORDER_THIN)
         ->setColor(new \PhpOffice\PhpSpreadsheet\Style\Color('FF000000'));
       
-      $log('info', "✓ All borders applied to range: {$fullRange}");
+      $log('info', "All borders applied to range: {$fullRange}");
 
       // Setup columns (A, B, C, D hidden; E, F, G visible)
       $sheet->getColumnDimension('A')->setWidth(0)->setVisible(false);  // ShipmentID
@@ -4538,11 +4432,11 @@ public function getPurchasePlanDtlPayment()
 
       // Set freeze panes at H4 (freeze columns A-G and rows 1-3)
       $sheet->freezePane('H4');
-      $log('info', "✓ Freeze panes set at H4 (header area frozen)");
+      $log('info', "Freeze panes set at H4 (header area frozen)");
 
       $filename = 'PurchasePlan_' . date('Y-m-d') . '.xlsx';
       
-      $log('info', "✓ Excel created. Filename: {$filename}, Data rows: " . ($dataRow - 4));
+      $log('info', "Excel created. Filename: {$filename}, Data rows: " . ($dataRow - 4));
       $log('info', "=== EXPORT SUCCESSFUL ===");
 
       // Send debug logs as response header (JavaScript will parse it)
@@ -4596,7 +4490,7 @@ public function getPurchasePlanDtlPayment()
 
     $weeklyData = $row['weekly_data'];
     
-    // Extract week number dari header (WW25-04 → 4, WW26-01 → 1, WW25-40 → 40)
+    // Extract week number dari header (WW25-04 -> 4, WW26-01 -> 1, WW25-40 -> 40)
     $headerWeekNum = null;
     if (preg_match('/WW(\d{2})-(\d{1,2})/i', $wwKey, $m)) {
       $headerWeekNum = (int)$m[2];  // Extract hanya bagian week
@@ -4663,7 +4557,7 @@ public function getPurchasePlanDtlPayment()
 
     $weeklyData = $row['weekly_data'];
     
-    // Extract week number dari header (WW25-04 → 4, WW26-01 → 1, WW25-40 → 40)
+    // Extract week number dari header (WW25-04 -> 4, WW26-01 -> 1, WW25-40 -> 40)
     $headerWeekNum = null;
     if (preg_match('/WW(\d{2})-(\d{1,2})/i', $wwKey, $m)) {
       $headerWeekNum = (int)$m[2];  // Extract hanya bagian week
@@ -4816,7 +4710,7 @@ public function getPurchasePlanDtlPayment()
   private function _create_new_purchase_plan($itemDesc, $userID)
   {
     try {
-      // Generate doc number directly dari database (bypass create_header_doc untuk avoid POST→GET conversion)
+      // Generate doc number directly dari database (bypass create_header_doc untuk avoid POST->GET conversion)
       // Format: SPPLNTDI-26010173 (using dbsDocNoDate logic)
       
       $docDate = date('Y-m-d');

@@ -3,25 +3,7 @@ var selectedStatus = 0;
 var backendStatus = 0;
 
 $(document).ready(function () {
-  console.log("eventListener.js loaded");
-  console.log("Page ready - checking for table element");
-
-  // Debug: Cek table element di DOM
-  setTimeout(function () {
-    var $table = $("#report-doc");
-    console.log("=== PAGE LOAD CHECK ===");
-    console.log("Total #report-doc elements found:", $table.length);
-    console.log("Table visible:", $table.is(":visible"));
-    console.log("Table classes:", $table.attr("class"));
-    console.log("Table parent:", $table.parent().attr("class"));
-    console.log(
-      "Full table HTML:",
-      $table.prop("outerHTML")?.substring(0, 500) ?? "Not found",
-    );
-  }, 500);
-
   $("#filterdoc").click(function () {
-    console.log("Filter button clicked");
     $("#filterModal").modal("hide");
     waitingDialog.show("Please wait...");
 
@@ -34,12 +16,6 @@ $(document).ready(function () {
       backendStatus = 9;
     }
 
-    console.log(
-      "Selected Status:",
-      selectedStatus,
-      "Backend Status:",
-      backendStatus,
-    );
 
     $("#div-report-doc").css("display", "block");
 
@@ -358,11 +334,6 @@ $(document).ready(function () {
     ];
     number_column = [7, 8, 16, 17, 24, 25, 32];
 
-    console.log("Columns structure validation:");
-    col.forEach((colDef, index) => {
-      console.log(`Column ${index}: data="${colDef.data}"`);
-    });
-
     $.fn.dataTable.ext.search = [];
 
     $.fn.dataTable.ext.search.push(function (settings, data, dataIndex) {
@@ -383,32 +354,20 @@ $(document).ready(function () {
       return rowData.Status === statusMap[selectedStatus];
     });
 
-    console.log("Calling init_datatable with", col.length, "columns");
     try {
-      console.log("Before init - checking table element:");
-      console.log("  #report-doc exists:", $("#report-doc").length > 0);
-      console.log("  #report-doc visible:", $("#report-doc").is(":visible"));
-
       if ($("#report-doc").length === 0) {
         throw new Error("Table #report-doc tidak ditemukan di DOM");
       }
 
       init_datatable(col, number_column);
-      console.log("init_datatable called successfully");
     } catch (e) {
       console.error("Error in init_datatable:", e);
-      console.error("Full error:", e.toString());
       waitingDialog.hide();
     }
   });
 
   $("#btn-filter").click(function () {
-    console.log("Filter button clicked");
     $("#filterModal").modal("show");
-  });
-
-  $("#filterModal").on("show.bs.modal", function () {
-    console.log("Filter modal showing");
   });
 
   $("#filterModal").modal("show");
@@ -453,34 +412,23 @@ $(document).ready(function () {
 });
 
 function init_datatable(columns, number_column) {
-  console.log("==========================================");
-  console.log("INIT DATATABLE STARTED");
-  console.log("==========================================");
-  console.log("Columns count:", columns.length);
-  console.log("Number columns:", number_column);
-
-  // Validasi table element exists
   var $table = $("#report-doc");
-  console.log("✓ Table element exists:", $table.length > 0);
 
   if ($table.length === 0) {
-    console.error("✗ FATAL: Table #report-doc tidak ditemukan!");
+    console.error("Table #report-doc tidak ditemukan di DOM");
     alert("ERROR: Table element #report-doc tidak ditemukan di DOM!");
     return false;
   }
 
   try {
     if ($.fn.dataTable.isDataTable("#report-doc")) {
-      console.log("✓ Existing DataTable found, destroying...");
       $("#report-doc").DataTable().destroy();
-      console.log("✓ DataTable destroyed");
     }
   } catch (e) {
-    console.warn("⚠ Warning saat destroy existing DataTable:", e.message);
+    console.warn("Warning saat destroy existing DataTable:", e.message);
   }
 
   try {
-    console.log("✓ Creating new DataTable...");
     $("#report-doc").DataTable({
       ajax: {
         url: `${base_path}scm/purchasing/purchase_report/getPrReport`,
@@ -496,24 +444,13 @@ function init_datatable(columns, number_column) {
         },
         error: function (xhr, status, error) {
           console.error("AJAX Error:", status, error);
-          console.error("Response:", xhr.responseText);
         },
         dataFilter: function (data) {
-          console.log("Raw data dari controller:", data.substring(0, 200));
           try {
             var json = JSON.parse(data);
-            console.log("Data dari Controller (parsed):", json);
-            console.log("Total rows:", json.length);
-            if (json.length > 0) {
-              console.log("Kolom yang tersedia:", Object.keys(json[0]));
-              console.log("Sample First Row:", json[0]);
-            } else {
-              console.warn("Tidak ada data yang dikembalikan");
-            }
             return JSON.stringify(json);
           } catch (e) {
             console.error("Error parsing JSON:", e);
-            console.error("Data yang error:", data);
             return JSON.stringify([]);
           }
         },
@@ -522,11 +459,10 @@ function init_datatable(columns, number_column) {
       columnDefs: [{ className: "numeric", targets: number_column }],
       scrollX: true,
       initComplete: function () {
-        console.log("✓ DataTable initialization complete");
         waitingDialog.hide();
       },
       error: function (message) {
-        console.error("✗ DataTable Error:", message);
+        console.error("DataTable Error:", message);
       },
       dom: "Bfrtip",
       buttons: [
@@ -543,36 +479,6 @@ function init_datatable(columns, number_column) {
             orthogonal: "export",
           },
         },
-        //   {
-        //     text: "View Form PO",
-        //     attr: { title: "View", id: "btnView" },
-        //     action: function (e, dt, node, config) {
-        //       if (!selectedRow) {
-        //         alert("Please select data first!");
-        //       } else {
-        //         var data = $("#report-doc").DataTable().row(selectedRow).data();
-        //         const poNumber = data.PONumber;
-        //         if (
-        //           poNumber &&
-        //           (poNumber.includes("SPORD") || poNumber.includes("SPBLK"))
-        //         ) {
-        //           const poID = data.POID;
-        //           window.open(
-        //             base_path +
-        //               "scm/purchasing/create_po/viewPDFPoInventory/" +
-        //               poID,
-        //           );
-        //         } else if (poNumber && poNumber.includes("FPOTR")) {
-        //           const poID = data.POID;
-        //           window.open(
-        //             base_path + "scm/purchasing/create_po/viewPDFPoOther/" + poID,
-        //           );
-        //         } else {
-        //           alert("This Purchase Requisition still not On PO yet !");
-        //         }
-        //       }
-        //     },
-        //   },
         {
           text: "View Attachments",
           attr: { title: "View", id: "btnView" },
@@ -607,16 +513,8 @@ function init_datatable(columns, number_column) {
         });
       },
     });
-    console.log("✓ DataTable successfully initialized");
-    console.log("==========================================");
   } catch (e) {
-    console.error("==========================================");
-    console.error("✗ ERROR IN INIT_DATATABLE");
-    console.error("==========================================");
-    console.error("Error message:", e.message);
-    console.error("Error type:", e.name);
-    console.error("Full error:", e.toString());
-    console.error("Stack trace:", e.stack);
+    console.error("Error initializing DataTable:", e.message);
     waitingDialog.hide();
     alert("Error initializing DataTable:\n" + e.message);
   }
