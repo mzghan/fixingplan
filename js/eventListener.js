@@ -27,6 +27,8 @@ var selectedRow;
 var selectedStatus = 0;
 var backendStatus = 0;
 
+let realChanges = [];
+
 $(document).ready(function () {
   $("#filterdoc").click(function () {
     $("#filterModal").modal("hide");
@@ -4948,6 +4950,9 @@ $(function () {
   }
 
   function processImportedExcelData(jsonData) {
+    console.log("=== START PROCESS IMPORTED EXCEL DATA ===");
+    console.log("JSON Data rows:", jsonData.length);
+
     if (!jsonData || jsonData.length < 4) {
       alert(" Format Excel tidak valid! Minimal 4 baris diperlukan.");
       return;
@@ -4956,7 +4961,9 @@ $(function () {
     const baselineRecordCount = countTotalShipmentIds(baselinePurchasePlanData);
     const excelRecordCount = countShipmentIdsInExcel(jsonData);
 
-    // Jika Excel punya records yang lebih sedikit dari baseline, berarti file tidak terbaru
+    console.log("Baseline record count:", baselineRecordCount);
+    console.log("Excel record count:", excelRecordCount);
+
     if (excelRecordCount < baselineRecordCount) {
       console.warn("  ALERT: Excel file tidak berisi data terbaru!");
       console.warn(
@@ -4971,22 +4978,22 @@ $(function () {
       return;
     }
 
-    // Baris 0 = ETD, Baris 1 = WW headers, Baris 2 = Dates
-    const headerRow = jsonData[1]; // WW-xx labels
-    const dataRows = jsonData.slice(3); // Mulai dari baris ke-4 (index 3)
+    const headerRow = jsonData[1];
+    const dataRows = jsonData.slice(3);
+
+    console.log("Header row:", headerRow);
+    console.log("Data rows count:", dataRows.length);
 
     const vendorLookup = {};
     if (Array.isArray(allPurchasePlanData) && allPurchasePlanData.length > 0) {
       allPurchasePlanData.forEach((row) => {
         if (row.Vendor && row.VendorID) {
-          // Map both exact case dan uppercase untuk case-insensitive lookup
           const vendorKey = row.Vendor.trim().toUpperCase();
           if (!vendorLookup[vendorKey]) {
             vendorLookup[vendorKey] = row.VendorID;
           }
         }
       });
-      // console.log(" Vendor lookup created:", vendorLookup);
     }
 
     const weekColumns = [];
@@ -4995,101 +5002,94 @@ $(function () {
       if (wwLabel && wwLabel.match(/WW\d{2}-\d{2}/i)) {
         weekColumns.push({
           index: i,
-          label: wwLabel.toUpperCase(), // Normalize ke uppercase
-          position: weekColumns.length, // Track order
+          label: wwLabel.toUpperCase(),
+          position: weekColumns.length,
         });
       }
     }
 
-    // console.log(" Week columns found:", weekColumns.length, weekColumns);
+    console.log(
+      "Week columns found:",
+      weekColumns.length,
+      weekColumns.map((w) => w.label),
+    );
 
     if (weekColumns.length === 0) {
       alert(" Tidak ada kolom WW yang ditemukan di file Excel!");
       return;
     }
 
-    // Kumpulkan shipments yang akan di-update
     const shipmentChanges = [];
 
     dataRows.forEach((row, rowIdx) => {
       if (!row || row.length < 7) return;
 
-      const shipmentID = parseInt(row[0]) || null; // A: _ShipmentID (hidden)
-      const itemCode = (row[1] || "").toString().trim(); // B: _ItemCode (hidden)
-      let vendorID = parseInt(row[2]) || 0; // C: _VendorID (hidden) - NEW!
-      const rowHash = (row[3] || "").toString().trim(); // D: _RowHash (hidden)
-      const vendor = (row[4] || "").toString().trim(); // E: Visible Vendor
-      const itemDesc = (row[5] || "").toString().trim(); // F: Visible Item Desc
-      const color = (row[6] || "").toString().trim(); // G: Visible Color
+      const shipmentID = parseInt(row[0]) || null;
+      const itemCode = (row[1] || "").toString().trim();
+      let vendorID = parseInt(row[2]) || 0;
+      const rowHash = (row[3] || "").toString().trim();
+      const vendor = (row[4] || "").toString().trim();
+      const itemDesc = (row[5] || "").toString().trim();
+      const color = (row[6] || "").toString().trim();
+
+      console.log(
+        `\n--- Row ${rowIdx}: ShipmentID=${shipmentID}, Vendor=${vendor}, Item=${itemDesc}`,
+      );
 
       if (vendorID === 0 && vendor) {
         const vendorKey = vendor.trim().toUpperCase();
         const lookedUpID = vendorLookup[vendorKey];
         if (lookedUpID) {
           vendorID = lookedUpID;
-          // console.log(` VendorID lookup: "${vendor}" → ID ${vendorID}`);
+          console.log(`  VendorID lookup: "${vendor}" → ID ${vendorID}`);
         } else {
-          console.warn(` Vendor "${vendor}" tidak ditemukan di lookup table`);
+          console.warn(`  Vendor "${vendor}" tidak ditemukan di lookup table`);
         }
       }
 
       if (!shipmentID) {
-        // console.log(
-        //   `\n Row ${rowIdx}: BARIS BARU TERDETEKSI - Akan membuat Purchase Plan baru (VendorID=${vendorID})`,
-        // );
-
-        // Validasi bahwa vendor dan itemDesc minimal ada
+        console.log("  NEW ROW DETECTED (no ShipmentID)");
         if (!vendor || !itemDesc) {
-          console.warn(
-            ` Row ${rowIdx}: Vendor atau ItemDesc kosong untuk baris baru, skip`,
-          );
+          console.warn(`  Vendor atau ItemDesc kosong untuk baris baru, skip`);
           return;
         }
 
-        // console.log(
-        //   `\n Row ${rowIdx}: NEW PLAN - ${vendor} - ${itemDesc} (${color})`,
-        // );
-
-        const changedWeeks = []; // Array dengan mode detection
+        const changedWeeks = [];
 
         weekColumns.forEach((wc) => {
           const qtyImported = parseInt(row[wc.index]) || 0;
+          console.log(`    Week ${wc.label}: qty=${qtyImported}`);
 
-          const fullWeekMatch = wc.label.match(/WW(\d{2})-(\d{2})/);
-          const weekYear = fullWeekMatch
-            ? 2000 + parseInt(fullWeekMatch[1])
-            : selectedYear || new Date().getFullYear();
-          const weekNum = fullWeekMatch ? parseInt(fullWeekMatch[2]) : null;
-
-          let excelShipmentDate = null;
-          if (weekNum) {
-            try {
-              const simple = new Date(weekYear, 0, 4); // 4 Jan pasti di minggu 1
-              const dayOfWeek = simple.getDay() || 7; // 1 = Mon, 7 = Sun
-              const isoWeekStart = new Date(simple);
-              isoWeekStart.setDate(simple.getDate() - (dayOfWeek - 1)); // Monday of week 1
-
-              // Calculate Monday of target week
-              const monday = new Date(isoWeekStart);
-              monday.setDate(isoWeekStart.getDate() + (weekNum - 1) * 7);
-
-              // Format: YYYY-MM-DD
-              const yyyy = monday.getFullYear();
-              const mm = String(monday.getMonth() + 1).padStart(2, "0");
-              const dd = String(monday.getDate()).padStart(2, "0");
-              excelShipmentDate = `${yyyy}-${mm}-${dd}`;
-
-              // console.log(` Week ${wc.label} → Monday: ${excelShipmentDate}`);
-            } catch (e) {
-              console.error(` Error calculating Monday for ${wc.label}:`, e);
-            }
-          }
-
-          // Jika ada qty, tambahkan sebagai INSERT mode
           if (qtyImported > 0) {
+            const fullWeekMatch = wc.label.match(/WW(\d{2})-(\d{2})/);
+            const weekYear = fullWeekMatch
+              ? 2000 + parseInt(fullWeekMatch[1])
+              : selectedYear || new Date().getFullYear();
+            const weekNum = fullWeekMatch ? parseInt(fullWeekMatch[2]) : null;
+
+            let excelShipmentDate = null;
+            if (weekNum) {
+              try {
+                const simple = new Date(weekYear, 0, 4);
+                const dayOfWeek = simple.getDay() || 7;
+                const isoWeekStart = new Date(simple);
+                isoWeekStart.setDate(simple.getDate() - (dayOfWeek - 1));
+
+                const monday = new Date(isoWeekStart);
+                monday.setDate(isoWeekStart.getDate() + (weekNum - 1) * 7);
+
+                const yyyy = monday.getFullYear();
+                const mm = String(monday.getMonth() + 1).padStart(2, "0");
+                const dd = String(monday.getDate()).padStart(2, "0");
+                excelShipmentDate = `${yyyy}-${mm}-${dd}`;
+              } catch (e) {
+                console.error(` Error calculating Monday for ${wc.label}:`, e);
+              }
+            }
+
             if (!excelShipmentDate) {
               console.warn(
-                ` Warning: ${wc.label} tidak bisa hitung ShipmentDate! Fallback ke hari ini`,
+                `  Warning: ${wc.label} tidak bisa hitung ShipmentDate! Fallback ke hari ini`,
               );
               const today = new Date();
               const yyyy = today.getFullYear();
@@ -5107,37 +5107,19 @@ $(function () {
               batch_existing: null,
               mode: "insert",
               existingShipments: [],
+              _isUserModified: true,
             });
-
-            // console.log(
-            //   `   NEW SHIPMENT [insert]: ${wc.label} - imported: ${qtyImported}@${excelShipmentDate}`,
-            // );
-          } else {
-            changedWeeks.push({
-              week: wc.label,
-              qty_existing: 0,
-              qty_imported: 0,
-              shipment_date_existing: null,
-              shipment_date_imported: null,
-              batch_existing: null,
-              mode: "delete",
-              existingShipments: [],
-            });
-
-            // console.log(`   NEW SHIPMENT [delete]: ${wc.label} - no qty`);
+            console.log(
+              `    → INSERT mode for ${wc.label}: qty=${qtyImported}, date=${excelShipmentDate}`,
+            );
           }
         });
 
-        // Jika tidak ada qty sama sekali, skip baris ini
         if (changedWeeks.length === 0) {
-          console.warn(
-            ` Row ${rowIdx}: Baris baru tapi tidak ada qty di minggu apapun, skip`,
-          );
+          console.log("  No qty > 0, skip row");
           return;
         }
 
-        // Build change data untuk dikirim ke backend
-        //  PENTING: Setiap week punya sourceShipmentData untuk konsistensi
         const changedWeeksWithSourceData = changedWeeks.map((weekChange) => ({
           ...weekChange,
           sourceShipmentData: {
@@ -5149,10 +5131,10 @@ $(function () {
         }));
 
         shipmentChanges.push({
-          PurchasePlanID: null, // Null untuk indicator baris baru
+          PurchasePlanID: null,
           ShipmentID: null,
           Vendor: vendor,
-          VendorID: vendorID, // NEW: Include vendor ID dari hidden column
+          VendorID: vendorID,
           ItemDesc: itemDesc,
           Color: color,
           ItemCode: itemCode || null,
@@ -5169,22 +5151,22 @@ $(function () {
           changedWeeks: changedWeeksWithSourceData,
         });
 
-        // console.log(
-        //   ` Baris baru ditambahkan ke changes queue (VendorID=${vendorID})`,
-        // );
-        return; // Skip ke row berikutnya
+        console.log(`  New row added to changes: ${changedWeeks.length} weeks`);
+        return;
       }
 
-      // console.log(
-      //   `\n Row ${rowIdx}: ShipmentID=${shipmentID}, ${vendor} - ${itemDesc} (${color})`,
-      // );
+      console.log(
+        `  Existing row, finding matching row in allPurchasePlanData...`,
+      );
 
-      // Cari matching purchase plan dari tabel menggunakan ShipmentID
       let matchingRow = allPurchasePlanData.find(
         (r) => (r.ShipmentID || 0) === shipmentID,
       );
 
-      //  FIX: If ShipmentID not found (happens after split), try fallback matching
+      console.log(
+        `  Matching by ShipmentID: ${matchingRow ? "FOUND" : "NOT FOUND"}`,
+      );
+
       if (!matchingRow && itemCode && vendor) {
         const fallbackMatches = allPurchasePlanData.filter(
           (r) =>
@@ -5195,26 +5177,30 @@ $(function () {
 
         if (fallbackMatches.length > 0) {
           matchingRow = fallbackMatches[0];
-          // console.log(
-          //   `✓ Found ${fallbackMatches.length} matches by ItemCode+Vendor`,
-          //   fallbackMatches.map((m) => m.ShipmentID),
-          // );
+          console.log(
+            `  Found ${fallbackMatches.length} matches by ItemCode+Vendor, using first`,
+          );
         }
       }
 
       if (!matchingRow) {
         console.warn(
-          ` Row ${rowIdx}: Tidak ada match di database untuk ShipmentID=${shipmentID}`,
+          `  Tidak ada match di database untuk ShipmentID=${shipmentID}`,
         );
         return;
       }
+
+      console.log(
+        `  Matching row found: PurchasePlanID=${matchingRow.PurchasePlanID}, Vendor=${matchingRow.Vendor}`,
+      );
 
       let totalQtyImported = 0;
       weekColumns.forEach((wc) => {
         totalQtyImported += parseInt(row[wc.index]) || 0;
       });
 
-      //  FIX: Skip stale check if we used fallback matching
+      console.log(`  Total Qty Imported: ${totalQtyImported}`);
+
       const usedFallbackMatch = !allPurchasePlanData.find(
         (r) => r.ShipmentID === shipmentID,
       );
@@ -5231,16 +5217,9 @@ $(function () {
           );
           return;
         }
-        // console.log(` ✓ Data masih fresh - lanjut proses`);
-      } else {
-        // console.log(
-        //   ` ✓ Using fallback match - stale check skipped for split scenario`,
-        // );
       }
 
-      // console.log(" Found matching row - ShipmentID:", shipmentID);
-
-      const existingByWeek = {}; // { "WW25-38": { totalQty: 400, shipments: [...], firstShipmentDate: "2025-..." }, ... }
+      const existingByWeek = {};
       if (
         matchingRow.weekly_data &&
         typeof matchingRow.weekly_data === "object"
@@ -5248,13 +5227,11 @@ $(function () {
         Object.keys(matchingRow.weekly_data).forEach((weekKey) => {
           const weekData = matchingRow.weekly_data[weekKey];
           if (Array.isArray(weekData) && weekData.length > 0) {
-            //  HITUNG TOTAL QTY dari SEMUA shipments di minggu ini
             const totalQty = weekData.reduce(
               (sum, shipment) => sum + (parseInt(shipment.qty) || 0),
               0,
             );
 
-            // Normalize weekKey ke WW format
             let wwLabel;
             if (weekKey.includes("-")) {
               wwLabel = weekKey.toUpperCase().replace(/^WW/, "WW");
@@ -5273,7 +5250,6 @@ $(function () {
                 : "WW" + weekNum.padStart(2, "0");
             }
 
-            // SIMPAN: Total qty + semua shipment details + reference date
             existingByWeek[wwLabel] = {
               totalQty: totalQty,
               shipments: weekData,
@@ -5283,6 +5259,13 @@ $(function () {
           }
         });
       }
+
+      console.log(
+        "  Existing by week:",
+        Object.keys(existingByWeek).map(
+          (w) => `${w}: ${existingByWeek[w].totalQty}`,
+        ),
+      );
 
       const excelByWeek = {};
       weekColumns.forEach((wc) => {
@@ -5294,29 +5277,22 @@ $(function () {
 
         let excelShipmentDate = null;
         if (weekNum && weekYear) {
-          // Primary: gunakan getWednesdayOfWeek
           excelShipmentDate = getWednesdayOfWeek(weekYear, weekNum, "input");
 
           if (!excelShipmentDate || excelShipmentDate === "") {
             try {
-              const simple = new Date(weekYear, 0, 4); // 4 Jan pasti di minggu 1
-              const dayOfWeek = simple.getDay() || 7; // 1 = Mon, 7 = Sun
+              const simple = new Date(weekYear, 0, 4);
+              const dayOfWeek = simple.getDay() || 7;
               const isoWeekStart = new Date(simple);
-              isoWeekStart.setDate(simple.getDate() - (dayOfWeek - 1)); // Monday of week 1
+              isoWeekStart.setDate(simple.getDate() - (dayOfWeek - 1));
 
-              // Calculate Monday of target week
               const monday = new Date(isoWeekStart);
               monday.setDate(isoWeekStart.getDate() + (weekNum - 1) * 7);
 
-              // Format: YYYY-MM-DD
               const yyyy = monday.getFullYear();
               const mm = String(monday.getMonth() + 1).padStart(2, "0");
               const dd = String(monday.getDate()).padStart(2, "0");
               excelShipmentDate = `${yyyy}-${mm}-${dd}`;
-
-              // console.log(
-              //   `  Manual calculate: ${wc.label} → ${excelShipmentDate}`,
-              // );
             } catch (e) {
               console.error(` Error calculating date for ${wc.label}:`, e);
             }
@@ -5330,12 +5306,14 @@ $(function () {
         };
       });
 
-      // console.log(" Existing by week:", existingByWeek);
-      // console.log(" Excel by week:", excelByWeek);
+      console.log(
+        "  Excel by week:",
+        Object.keys(excelByWeek).map((w) => `${w}: ${excelByWeek[w].qty}`),
+      );
 
-      // 3. Compare per week dan detect mode aksi
-      let hasChanges = false;
-      const changedWeeks = []; // Array dengan mode detection
+      const changedWeeks = [];
+      const excelTotalByWeek = {};
+      const existingTotalByWeek = {};
 
       weekColumns.forEach((wc) => {
         const excelData = excelByWeek[wc.label];
@@ -5346,54 +5324,53 @@ $(function () {
         const existingQty = existingData?.totalQty || 0;
         const existingShipmentDate = existingData?.firstShipmentDate || null;
 
+        excelTotalByWeek[wc.label] = excelQty;
+        existingTotalByWeek[wc.label] = existingQty;
+
         const hasExistingData =
           existingData !== undefined && existingData !== null;
         const isRealChange =
           excelQty !== existingQty && !(excelQty === 0 && !hasExistingData);
 
-        if (isRealChange) {
-          hasChanges = true;
+        console.log(
+          `    Week ${wc.label}: Excel=${excelQty}, Existing=${existingQty}, Change=${isRealChange}`,
+        );
 
+        if (isRealChange) {
           let mode = "";
           if (!hasExistingData && excelQty > 0) {
-            // Excel ada data, database kosong → INSERT BARU
             mode = "insert";
           } else if (hasExistingData && excelQty === 0) {
-            // Database ada data, Excel kosong → DELETE/ARCHIVE
             mode = "delete";
           } else if (
             excelShipmentDate === existingShipmentDate ||
             !excelShipmentDate ||
             !existingShipmentDate
           ) {
-            // Shipment date sama atau tidak ada info → UPDATE SAME WEEK
             mode = "update_same";
           } else if (
             excelQty === existingQty &&
             excelShipmentDate !== existingShipmentDate
           ) {
-            // Qty sama tapi tanggal berbeda → FULL MOVE (geser shipment)
             mode = "full_move";
           } else if (
             excelQty < existingQty &&
             excelShipmentDate !== existingShipmentDate
           ) {
-            // Qty lebih kecil + tanggal berbeda → PARTIAL SPLIT
             mode = "partial_split";
           } else if (
             excelQty > existingQty &&
             excelShipmentDate !== existingShipmentDate
           ) {
-            // Qty lebih besar + tanggal berbeda → OVERRIDE
             mode = "override";
           } else if (
             excelQty !== existingQty &&
             excelShipmentDate === existingShipmentDate
           ) {
-            // Qty berbeda tapi tanggal sama → OVERWRITE QTY
             mode = "overwrite_qty";
           }
 
+          console.log(`      → Mode: ${mode}`);
           changedWeeks.push({
             week: wc.label,
             qty_existing: existingQty,
@@ -5403,138 +5380,104 @@ $(function () {
             batch_existing: existingData?.firstBatch || null,
             mode: mode,
             existingShipments: existingData?.shipments || [],
+            _isUserModified: true,
           });
-
-          // console.log(
-          //   `   CHANGE DETECTED [${mode}]: ${wc.label} - existing: ${existingQty}@${existingShipmentDate}, imported: ${excelQty}@${excelShipmentDate}`,
-          // );
         }
       });
 
-      // 4. Validation: Jika tidak ada perubahan sama sekali, skip shipment ini
-      if (!hasChanges) {
-        // console.log(" No changes for this shipment - will skip");
-        return; // Skip ke row berikutnya
+      if (changedWeeks.length === 0) {
+        console.log("  No changes detected for this row, skipping");
+        return;
       }
 
-      if (changedWeeks.length >= 2) {
-        const insertModes = changedWeeks.filter((cw) => cw.mode === "insert");
-        const usedInsertModes = new Set();
+      console.log(`  Total changes detected: ${changedWeeks.length}`);
 
-        changedWeeks
-          .filter((cw) => cw.mode === "delete")
-          .forEach((deleteMode) => {
-            const insertMode = insertModes.find(
-              (im) =>
-                !usedInsertModes.has(im) &&
-                im.qty_imported === deleteMode.qty_existing &&
-                im.week !== deleteMode.week,
-            );
+      let finalChangedWeeks = [...changedWeeks];
 
-            if (!insertMode) return; // tidak ada pasangan yang jelas, biarkan sebagai delete biasa
+      const totalExcelQty = Object.values(excelTotalByWeek).reduce(
+        (a, b) => a + b,
+        0,
+      );
+      const totalExistingQty = Object.values(existingTotalByWeek).reduce(
+        (a, b) => a + b,
+        0,
+      );
 
-            usedInsertModes.add(insertMode);
+      console.log(
+        `  Total Excel Qty: ${totalExcelQty}, Total Existing Qty: ${totalExistingQty}`,
+      );
 
-            let moveToDate = insertMode.shipment_date_imported;
-
-            if (!moveToDate || moveToDate === "") {
-              const insertWeekLabel = insertMode.week;
-              const weekMatch = insertWeekLabel.match(/WW(\d{2})-(\d{2})/);
-
-              if (weekMatch) {
-                const weekYear = 2000 + parseInt(weekMatch[1]);
-                const weekNum = parseInt(weekMatch[2]);
-
-                try {
-                  const simple = new Date(weekYear, 0, 4);
-                  const dayOfWeek = simple.getDay() || 7;
-                  const isoWeekStart = new Date(simple);
-                  isoWeekStart.setDate(simple.getDate() - (dayOfWeek - 1));
-
-                  const monday = new Date(isoWeekStart);
-                  monday.setDate(isoWeekStart.getDate() + (weekNum - 1) * 7);
-
-                  const yyyy = monday.getFullYear();
-                  const mm = String(monday.getMonth() + 1).padStart(2, "0");
-                  const dd = String(monday.getDate()).padStart(2, "0");
-                  moveToDate = `${yyyy}-${mm}-${dd}`;
-                } catch (e) {
-                  console.error(
-                    ` Error calculating date from ${insertWeekLabel}:`,
-                    e,
-                  );
-                }
-              }
-            }
-
-            deleteMode.mode = "full_move";
-            deleteMode.week_move_to = insertMode.week;
-            deleteMode.shipment_date_move_to = moveToDate;
-            deleteMode.shipment_date_imported = null;
-          });
-
-        if (usedInsertModes.size > 0) {
-          for (let i = changedWeeks.length - 1; i >= 0; i--) {
-            if (usedInsertModes.has(changedWeeks[i])) {
-              changedWeeks.splice(i, 1);
-            }
-          }
+      if (totalExcelQty === totalExistingQty && finalChangedWeeks.length > 0) {
+        console.log("  Total qty same, filtering out update_same changes");
+        const moveWeeks = finalChangedWeeks.filter(
+          (cw) => cw.mode === "full_move",
+        );
+        if (moveWeeks.length === 0) {
+          const beforeFilter = finalChangedWeeks.length;
+          finalChangedWeeks = finalChangedWeeks.filter(
+            (cw) => cw.mode !== "update_same",
+          );
+          console.log(
+            `  Filtered out ${beforeFilter - finalChangedWeeks.length} update_same changes`,
+          );
         }
       }
-      const shipmentDataWithWeekDetails = changedWeeks.map((weekChange) => {
-        const existingShipmentInWeek = existingByWeek[weekChange.week];
-        let sourceShipmentForThisWeek = {
-          batch: matchingRow.Batch || 0,
-          closed: matchingRow.Closed || 0,
-          BlanketID: matchingRow.BlanketID || null,
-          POID: matchingRow.POID || null,
-          ItemID: matchingRow.ItemID || null,
-          ItemUnitID: matchingRow.ItemUnitID || null,
-        };
-        if (
-          existingShipmentInWeek &&
-          existingShipmentInWeek.shipments &&
-          existingShipmentInWeek.shipments.length > 0
-        ) {
-          const firstShipment = existingShipmentInWeek.shipments[0];
-          sourceShipmentForThisWeek = {
-            batch: firstShipment.batch || matchingRow.Batch || 0,
-            closed:
-              firstShipment.closed !== undefined
-                ? firstShipment.closed
-                : matchingRow.Closed || 0,
-            BlanketID: firstShipment.BlanketID || matchingRow.BlanketID || null,
-            POID: firstShipment.POID || matchingRow.POID || null,
-            ItemID: firstShipment.itemID || matchingRow.ItemID || null,
-            ItemUnitID:
-              firstShipment.itemUnitID || matchingRow.ItemUnitID || null,
+
+      if (finalChangedWeeks.length === 0) {
+        console.log("  After filtering, no changes left");
+        return;
+      }
+
+      console.log(
+        `  Final changes after filtering: ${finalChangedWeeks.length}`,
+      );
+
+      const shipmentDataWithWeekDetails = finalChangedWeeks.map(
+        (weekChange) => {
+          const existingShipmentInWeek = existingByWeek[weekChange.week];
+          let sourceShipmentForThisWeek = {
+            batch: matchingRow.Batch || 0,
+            closed: matchingRow.Closed || 0,
+            BlanketID: matchingRow.BlanketID || null,
+            POID: matchingRow.POID || null,
+            ItemID: matchingRow.ItemID || null,
+            ItemUnitID: matchingRow.ItemUnitID || null,
           };
-        } else {
-          if (matchingRow.BlanketID && !matchingRow.POID) {
-            // Hanya Blanket, tanpa PO
-            sourceShipmentForThisWeek.closed = 1;
-            // console.log(
-            //   `  Week ${weekChange.week}: No existing shipment, using BlanketID priority - closed=1 (BLANKET)`,
-            // );
-          } else if (matchingRow.BlanketID && matchingRow.POID) {
-            sourceShipmentForThisWeek.closed = 1;
-            // console.log(
-            //   `  Week ${weekChange.week}: No existing shipment, found both BlanketID & POID - using closed=1 (BLANKET priority)`,
-            // );
-          } else if (!matchingRow.BlanketID && matchingRow.POID) {
-            // Hanya PO, tanpa Blanket
-            sourceShipmentForThisWeek.closed = 2;
-            // console.log(
-            //   `  Week ${weekChange.week}: No existing shipment, using POID only - closed=2 (PO)`,
-            // );
+          if (
+            existingShipmentInWeek &&
+            existingShipmentInWeek.shipments &&
+            existingShipmentInWeek.shipments.length > 0
+          ) {
+            const firstShipment = existingShipmentInWeek.shipments[0];
+            sourceShipmentForThisWeek = {
+              batch: firstShipment.batch || matchingRow.Batch || 0,
+              closed:
+                firstShipment.closed !== undefined
+                  ? firstShipment.closed
+                  : matchingRow.Closed || 0,
+              BlanketID:
+                firstShipment.BlanketID || matchingRow.BlanketID || null,
+              POID: firstShipment.POID || matchingRow.POID || null,
+              ItemID: firstShipment.itemID || matchingRow.ItemID || null,
+              ItemUnitID:
+                firstShipment.itemUnitID || matchingRow.ItemUnitID || null,
+            };
+          } else {
+            if (matchingRow.BlanketID && !matchingRow.POID) {
+              sourceShipmentForThisWeek.closed = 1;
+            } else if (matchingRow.BlanketID && matchingRow.POID) {
+              sourceShipmentForThisWeek.closed = 1;
+            } else if (!matchingRow.BlanketID && matchingRow.POID) {
+              sourceShipmentForThisWeek.closed = 2;
+            }
           }
-        }
 
-        return {
-          ...weekChange,
-          sourceShipmentData: sourceShipmentForThisWeek,
-        };
-      });
+          return {
+            ...weekChange,
+            sourceShipmentData: sourceShipmentForThisWeek,
+          };
+        },
+      );
 
       shipmentChanges.push({
         PurchasePlanID: matchingRow.PurchasePlanID,
@@ -5553,21 +5496,22 @@ $(function () {
           batch: matchingRow.Batch || 0,
           closed: matchingRow.Closed || 0,
         },
-        // Changed weeks dengan mode detection - detail lengkap untuk backend logic
-        //  PENTING: Setiap week punya sourceShipmentData yang akurat (bukan global)
         changedWeeks: shipmentDataWithWeekDetails,
       });
+
+      console.log(
+        `  Added to shipmentChanges: ${shipmentDataWithWeekDetails.length} weeks`,
+      );
     });
 
-    // console.log("\n Total shipments with changes:", shipmentChanges.length);
-    // console.log(" Shipment changes:", shipmentChanges);
+    console.log("\n=== FINAL SUMMARY ===");
+    console.log(`Total shipments with changes: ${shipmentChanges.length}`);
 
     if (shipmentChanges.length === 0) {
       alert(" No changes detected in Excel - all data matches the database!");
       return;
     }
 
-    // Confirm sebelum update dengan rincian mode aksi
     let totalChangedCells = 0;
     const modeCount = {
       insert: 0,
@@ -5579,14 +5523,20 @@ $(function () {
       delete: 0,
     };
 
-    shipmentChanges.forEach((sc) => {
-      totalChangedCells += sc.changedWeeks.length;
+    shipmentChanges.forEach((sc, idx) => {
+      console.log(`  Shipment ${idx + 1}: ${sc.changedWeeks.length} changes`);
       sc.changedWeeks.forEach((cw) => {
+        console.log(
+          `    ${cw.week}: ${cw.mode} (${cw.qty_existing}→${cw.qty_imported})`,
+        );
         if (modeCount[cw.mode] !== undefined) {
           modeCount[cw.mode]++;
         }
       });
+      totalChangedCells += sc.changedWeeks.length;
     });
+
+    console.log("Mode counts:", modeCount);
 
     let modeDetails = "";
     Object.entries(modeCount).forEach(([mode, count]) => {
@@ -5605,24 +5555,20 @@ $(function () {
       }
     });
 
+    console.log("Mode details:", modeDetails);
+
     const confirmed = confirm(
       ` Will process ${shipmentChanges.length} shipment(s) with ${totalChangedCells} changes:\n${modeDetails}\n\nContinue?`,
     );
     if (!confirmed) {
-      // console.log(" Import canceled by user");
       return;
     }
 
-    // Send ke backend
+    console.log("Sending to backend...");
     sendImportedDataToBackend(shipmentChanges);
   }
 
   function sendImportedDataToBackend(shipmentChanges) {
-    // console.log(
-    //   " Sending import changes to backend dengan mode detection...",
-    //   shipmentChanges,
-    // );
-
     const sanitizedChanges = shipmentChanges.map((change) => {
       return {
         ...change,
@@ -5640,8 +5586,6 @@ $(function () {
     let jsonString;
     try {
       jsonString = JSON.stringify({ changes: sanitizedChanges });
-      // console.log(" JSON stringified successfully, length:", jsonString.length);
-      // console.log(" JSON preview:", jsonString.substring(0, 500));
     } catch (e) {
       console.error(" JSON stringify failed:", e);
       alert(" Error: Failed to prepare data - " + e.message);

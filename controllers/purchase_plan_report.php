@@ -2879,464 +2879,553 @@ public function getPurchasePlanDtlPayment()
 
   public function import_from_excel()
   {
-    header('Content-Type: application/json');
+      header('Content-Type: application/json');
 
-    // Initialize debug logs untuk dikirim ke frontend
-    $debugLogs = [];
+      $debugLogs = [];
 
-    try {
-      error_reporting(E_ALL);
-      ini_set('display_errors', 0);
+      try {
+          error_reporting(E_ALL);
+          ini_set('display_errors', 0);
 
-      // Log detailed request info
-      $debugLogs[] = '[INFO] ===== REQUEST DETAILS =====';
-      $debugLogs[] = '[INFO] REQUEST_METHOD: ' . $_SERVER['REQUEST_METHOD'];
-      $debugLogs[] = '[INFO] CONTENT_TYPE: ' . (isset($_SERVER['CONTENT_TYPE']) ? $_SERVER['CONTENT_TYPE'] : 'not-set');
-      $debugLogs[] = '[INFO] CONTENT_LENGTH: ' . (isset($_SERVER['CONTENT_LENGTH']) ? $_SERVER['CONTENT_LENGTH'] : 'not-set');
-      $debugLogs[] = '[INFO] HTTP_X_REQUESTED_WITH: ' . (isset($_SERVER['HTTP_X_REQUESTED_WITH']) ? $_SERVER['HTTP_X_REQUESTED_WITH'] : 'not-set');
+          $debugLogs[] = '[INFO] ===== REQUEST DETAILS =====';
+          $debugLogs[] = '[INFO] REQUEST_METHOD: ' . $_SERVER['REQUEST_METHOD'];
+          $debugLogs[] = '[INFO] CONTENT_TYPE: ' . (isset($_SERVER['CONTENT_TYPE']) ? $_SERVER['CONTENT_TYPE'] : 'not-set');
+          $debugLogs[] = '[INFO] CONTENT_LENGTH: ' . (isset($_SERVER['CONTENT_LENGTH']) ? $_SERVER['CONTENT_LENGTH'] : 'not-set');
+          $debugLogs[] = '[INFO] HTTP_X_REQUESTED_WITH: ' . (isset($_SERVER['HTTP_X_REQUESTED_WITH']) ? $_SERVER['HTTP_X_REQUESTED_WITH'] : 'not-set');
 
-      log_message('info', '=== IMPORT FROM EXCEL WITH MODE DETECTION START ===');
-      log_message('info', 'REQUEST_METHOD: ' . $_SERVER['REQUEST_METHOD']);
-      log_message('info', 'CONTENT_TYPE: ' . (isset($_SERVER['CONTENT_TYPE']) ? $_SERVER['CONTENT_TYPE'] : 'not-set'));
-      log_message('info', 'CONTENT_LENGTH: ' . (isset($_SERVER['CONTENT_LENGTH']) ? $_SERVER['CONTENT_LENGTH'] : 'not-set'));
+          log_message('info', '=== IMPORT FROM EXCEL WITH MODE DETECTION START ===');
+          log_message('info', 'REQUEST_METHOD: ' . $_SERVER['REQUEST_METHOD']);
+          log_message('info', 'CONTENT_TYPE: ' . (isset($_SERVER['CONTENT_TYPE']) ? $_SERVER['CONTENT_TYPE'] : 'not-set'));
+          log_message('info', 'CONTENT_LENGTH: ' . (isset($_SERVER['CONTENT_LENGTH']) ? $_SERVER['CONTENT_LENGTH'] : 'not-set'));
 
-      // Try multiple ways to get JSON data dari CodeIgniter
-      $json = null;
-      
-      // Method 1: Try raw_input_stream (CodeIgniter 3)
-      if (!$json && property_exists($this->input, 'raw_input_stream')) {
-        $json = $this->input->raw_input_stream;
-        $debugLogs[] = '[INFO] Using raw_input_stream method - got ' . strlen($json) . ' bytes';
-      }
-      
-      // Method 2: Try reading directly dari php://input
-      if (!$json || strlen($json) === 0) {
-        $json = file_get_contents('php://input');
-        $debugLogs[] = '[INFO] Using php://input method - got ' . strlen($json) . ' bytes';
-      }
-      
-      // Method 3: Try $_POST data yang sudah di-parse
-      if (!$json && !empty($_POST)) {
-        $json = json_encode($_POST);
-        $debugLogs[] = '[INFO] Using $_POST method - got ' . strlen($json) . ' bytes';
-      }
-      
-      $debugLogs[] = '[INFO] Final JSON length: ' . strlen($json);
-      $debugLogs[] = '[INFO] First 500 chars: ' . substr($json, 0, 500);
+          $json = null;
+          
+          if (!$json && property_exists($this->input, 'raw_input_stream')) {
+              $json = $this->input->raw_input_stream;
+              $debugLogs[] = '[INFO] Using raw_input_stream method - got ' . strlen($json) . ' bytes';
+          }
+          
+          if (!$json || strlen($json) === 0) {
+              $json = file_get_contents('php://input');
+              $debugLogs[] = '[INFO] Using php://input method - got ' . strlen($json) . ' bytes';
+          }
+          
+          if (!$json && !empty($_POST)) {
+              $json = json_encode($_POST);
+              $debugLogs[] = '[INFO] Using $_POST method - got ' . strlen($json) . ' bytes';
+          }
+          
+          $debugLogs[] = '[INFO] Final JSON length: ' . strlen($json);
+          $debugLogs[] = '[INFO] First 500 chars: ' . substr($json, 0, 500);
 
-      if (!$json || strlen($json) === 0) {
-        $debugLogs[] = '[ERROR] Empty request body!';
-        $debugLogs[] = '[DEBUG] $_POST: ' . (empty($_POST) ? 'empty' : count($_POST) . ' items');
-        $debugLogs[] = '[DEBUG] $_SERVER[CONTENT_LENGTH]: ' . (isset($_SERVER['CONTENT_LENGTH']) ? $_SERVER['CONTENT_LENGTH'] : 'not-set');
-        $debugLogs[] = '[DEBUG] Try checking Network tab in browser console!';
-        $debugLogs[] = '[DEBUG] Make sure Content-Type header is set to application/json';
-        throw new Exception('Empty request body received - check Network tab in browser console for actual request headers');
-      }
+          if (!$json || strlen($json) === 0) {
+              $debugLogs[] = '[ERROR] Empty request body!';
+              $debugLogs[] = '[DEBUG] $_POST: ' . (empty($_POST) ? 'empty' : count($_POST) . ' items');
+              $debugLogs[] = '[DEBUG] $_SERVER[CONTENT_LENGTH]: ' . (isset($_SERVER['CONTENT_LENGTH']) ? $_SERVER['CONTENT_LENGTH'] : 'not-set');
+              $debugLogs[] = '[DEBUG] Try checking Network tab in browser console!';
+              $debugLogs[] = '[DEBUG] Make sure Content-Type header is set to application/json';
+              throw new Exception('Empty request body received - check Network tab in browser console for actual request headers');
+          }
 
-      $data = json_decode($json, true);
+          $data = json_decode($json, true);
 
-      if (json_last_error() !== JSON_ERROR_NONE) {
-        $errorMsg = json_last_error_msg();
-        $errorCode = json_last_error();
-        $debugLogs[] = '[ERROR] JSON decode failed: ' . $errorMsg;
-        $debugLogs[] = '[ERROR] JSON error code: ' . $errorCode;
-        log_message('error', 'JSON decode failed: ' . $errorMsg);
-        log_message('error', 'JSON error code: ' . $errorCode);
-        throw new Exception('JSON decode error: ' . $errorMsg . ' (code: ' . $errorCode . ')');
-      }
+          if (json_last_error() !== JSON_ERROR_NONE) {
+              $errorMsg = json_last_error_msg();
+              $errorCode = json_last_error();
+              $debugLogs[] = '[ERROR] JSON decode failed: ' . $errorMsg;
+              $debugLogs[] = '[ERROR] JSON error code: ' . $errorCode;
+              log_message('error', 'JSON decode failed: ' . $errorMsg);
+              log_message('error', 'JSON error code: ' . $errorCode);
+              throw new Exception('JSON decode error: ' . $errorMsg . ' (code: ' . $errorCode . ')');
+          }
 
+          if (!$data) {
+              $debugLogs[] = '[ERROR] JSON decoded to empty result';
+              throw new Exception('JSON decoded to empty result');
+          }
 
-      if (!$data) {
-        $debugLogs[] = '[ERROR] JSON decoded to empty result';
-        throw new Exception('JSON decoded to empty result');
-      }
+          $debugLogs[] = '[INFO] JSON decoded successfully';
+          $debugLogs[] = '[INFO] Data keys: ' . implode(',', array_keys($data));
 
-      $debugLogs[] = '[INFO] JSON decoded successfully';
-      $debugLogs[] = '[INFO] Data keys: ' . implode(',', array_keys($data));
+          if (!isset($data['changes'])) {
+              $debugLogs[] = '[ERROR] Missing "changes" key in data';
+              throw new Exception('Missing "changes" in request');
+          }
 
-      if (!isset($data['changes'])) {
-        $debugLogs[] = '[ERROR] Missing "changes" key in data';
-        throw new Exception('Missing "changes" in request');
-      }
+          $changes = $data['changes'];
+          $debugLogs[] = '[INFO] Changes count: ' . count($changes);
+          
+          log_message('info', '=== RECEIVED CHANGES DETAIL ===');
+          log_message('info', 'Total changes: ' . count($changes));
+          
+          $groupedChanges = [];
+          
+          foreach ($changes as $idx => $change) {
+              $groupKey = $change['Vendor'] . '||' . $change['ItemDesc'] . '||' . $change['Color'];
+              
+              if (!isset($groupedChanges[$groupKey])) {
+                  $groupedChanges[$groupKey] = [
+                      'PurchasePlanID' => $change['PurchasePlanID'],
+                      'ShipmentID' => $change['ShipmentID'],
+                      'Vendor' => $change['Vendor'],
+                      'ItemDesc' => $change['ItemDesc'],
+                      'Color' => $change['Color'],
+                      'ItemCode' => $change['ItemCode'],
+                      'ItemUnitID' => $change['ItemUnitID'],
+                      'Price' => $change['Price'],
+                      'PODateEst' => $change['PODateEst'],
+                      'Term' => $change['Term'],
+                      'BlanketID' => $change['BlanketID'],
+                      'POID' => $change['POID'],
+                      'sourceShipmentData' => $change['sourceShipmentData'],
+                      'changedWeeks' => [],
+                      '_groupedShipmentIDs' => []
+                  ];
+              }
+              
+              $groupedChanges[$groupKey]['_groupedShipmentIDs'][] = $change['ShipmentID'];
+              
+              foreach ($change['changedWeeks'] as $weekChange) {
+                  $weekLabel = $weekChange['week'];
+                  $found = false;
+                  foreach ($groupedChanges[$groupKey]['changedWeeks'] as &$existingWeek) {
+                      if ($existingWeek['week'] === $weekLabel) {
+                          $existingWeek['qty_existing'] += $weekChange['qty_existing'];
+                          $existingWeek['qty_imported'] += $weekChange['qty_imported'];
+                          if (!empty($weekChange['existingShipments'])) {
+                              $existingWeek['existingShipments'] = array_merge(
+                                  $existingWeek['existingShipments'],
+                                  $weekChange['existingShipments']
+                              );
+                          }
+                          $found = true;
+                          break;
+                      }
+                  }
+                  if (!$found) {
+                      $groupedChanges[$groupKey]['changedWeeks'][] = [
+                          'week' => $weekLabel,
+                          'qty_existing' => $weekChange['qty_existing'],
+                          'qty_imported' => $weekChange['qty_imported'],
+                          'shipment_date_existing' => $weekChange['shipment_date_existing'],
+                          'shipment_date_imported' => $weekChange['shipment_date_imported'],
+                          'batch_existing' => $weekChange['batch_existing'],
+                          'mode' => $weekChange['mode'],
+                          'existingShipments' => $weekChange['existingShipments'] ?? [],
+                          'sourceShipmentData' => $weekChange['sourceShipmentData'] ?? $change['sourceShipmentData'],
+                          '_isUserModified' => true
+                      ];
+                  }
+              }
+          }
+          
+          $groupedChanges = array_values($groupedChanges);
+          $debugLogs[] = '[INFO] Grouped changes count: ' . count($groupedChanges);
+          log_message('info', 'Grouped changes: ' . count($groupedChanges) . ' groups');
 
-      $debugLogs[] = '[INFO] Changes count: ' . count($data['changes']);
+          $this->db->trans_start();
 
-      $this->db->trans_start();
+          $results_by_mode = [
+              'insert' => 0,
+              'update_same' => 0,
+              'full_move' => 0,
+              'partial_split' => 0,
+              'override' => 0,
+              'overwrite_qty' => 0,
+              'delete' => 0,
+              'new_plan_created' => 0
+          ];
+          $errors = [];
+          $currentUserID = $this->_get_current_user_id();
 
-      $changes = $data['changes'];
-      $results_by_mode = [
-        'insert' => 0,
-        'update_same' => 0,
-        'full_move' => 0,
-        'partial_split' => 0,
-        'override' => 0,
-        'overwrite_qty' => 0,
-        'delete' => 0,
-        'new_plan_created' => 0
-      ];
-      $errors = [];
-      $currentUserID = $this->_get_current_user_id();
+          $debugLogs[] = '[INFO] Starting to process ' . count($groupedChanges) . ' grouped changes';
+          log_message('info', 'Processing ' . count($groupedChanges) . ' grouped shipment changes');
 
-      $debugLogs[] = '[INFO] Starting to process ' . count($changes) . ' changes';
-      log_message('info', 'Processing ' . count($changes) . ' shipment changes');
-
-      // Process setiap shipment yang berubah
-      foreach ($changes as $changeIdx => $change) {
-        try {
-          $sourceShipmentID = $change['ShipmentID'] ?? null;
-          $purchasePlanID = $change['PurchasePlanID'] ?? null;
-          $changedWeeks = $change['changedWeeks'] ?? [];
-
-          log_message('info', "Change {$changeIdx}: SourceShipmentID={$sourceShipmentID}, PurchasePlanID={$purchasePlanID}, Changes=" . count($changedWeeks));
-
-
-          if (empty($purchasePlanID)) {
-            log_message('info', "Change {$changeIdx}: BARIS BARU TERDETEKSI - Akan membuat Purchase Plan baru");
-            
-            // Extract data dari change object untuk buat plan baru
-            $vendor = $change['Vendor'] ?? null;
-            $vendorID = $change['VendorID'] ?? 0;  // NEW: Read VendorID dari change
-            $itemDesc = $change['ItemDesc'] ?? null;
-            $color = $change['Color'] ?? null;
-            $itemID = $change['ItemID'] ?? null;
-            $itemUnitID = $change['ItemUnitID'] ?? null;
-
-            if (empty($vendor) || empty($itemDesc)) {
-              throw new Exception("Change {$changeIdx}: Vendor atau ItemDesc kosong untuk baris baru");
-            }
-
-            // Buat Purchase Plan header baru
-            $newPurchasePlanID = $this->_create_new_purchase_plan($itemDesc, $currentUserID);
-            log_message('info', "  Purchase Plan baru dibuat: ID={$newPurchasePlanID}");
-
-            // Process shipment untuk baris baru
-            foreach ($changedWeeks as $weekIdx => $weekChange) {
+          foreach ($groupedChanges as $changeIdx => $change) {
               try {
-                $weekLabel = $weekChange['week'] ?? '';
-                $qtyImported = (int)($weekChange['qty_imported'] ?? 0);
-                $shipmentDateImported = $weekChange['shipment_date_imported'] ?? null;
+                  $sourceShipmentID = $change['ShipmentID'] ?? null;
+                  $purchasePlanID = $change['PurchasePlanID'] ?? null;
+                  $changedWeeks = $change['changedWeeks'] ?? [];
+                  $groupedShipmentIDs = $change['_groupedShipmentIDs'] ?? [];
 
-                log_message('info', "  Processing new row shipment for week {$weekLabel}, Qty={$qtyImported}, VendorID={$vendorID}");
+                  log_message('info', "Group Change {$changeIdx}: SourceShipmentID={$sourceShipmentID}, PurchasePlanID={$purchasePlanID}, GroupedShipmentIDs=" . implode(',', $groupedShipmentIDs));
 
-                // Buat shipment untuk baris baru (dengan VendorID)
-                if ($qtyImported > 0) {
-                  $this->_create_new_shipment_for_import(
-                    $newPurchasePlanID,
-                    $vendorID > 0 ? $vendorID : $vendor,  // Gunakan VendorID jika tersedia, fallback ke vendor name
-                    $itemID,
-                    $itemUnitID,
-                    $color,
-                    $qtyImported,
-                    $shipmentDateImported,
-                    $weekLabel,
-                    $currentUserID
-                  );
-                  log_message('info', "  Shipment created for new plan");
-                }
-              } catch (Throwable $shipmentEx) {
-                $errors[] = "New row week {$weekLabel}: " . $shipmentEx->getMessage();
-                log_message('error', "New shipment error: " . $shipmentEx->getMessage());
-              }
-            }
+                  if (empty($purchasePlanID)) {
+                      log_message('info', "Change {$changeIdx}: BARIS BARU TERDETEKSI - Akan membuat Purchase Plan baru");
+                      
+                      $vendor = $change['Vendor'] ?? null;
+                      $itemDesc = $change['ItemDesc'] ?? null;
+                      $color = $change['Color'] ?? null;
+                      $itemID = $change['ItemID'] ?? null;
+                      $itemUnitID = $change['ItemUnitID'] ?? null;
+                      $vendorID = 0;
 
-            // Update sourceShipmentID ke value dummy agar tidak error di check awal
-            $sourceShipmentID = -1;
-            $purchasePlanID = $newPurchasePlanID;
-            $results_by_mode['new_plan_created']++;
+                      if (empty($vendor) || empty($itemDesc)) {
+                          throw new Exception("Change {$changeIdx}: Vendor atau ItemDesc kosong untuk baris baru");
+                      }
 
-            // Skip ke change berikutnya karena shipment sudah dihandle
-            continue;
-          }
+                      $newPurchasePlanID = $this->_create_new_purchase_plan($itemDesc, $currentUserID);
+                      log_message('info', "  Purchase Plan baru dibuat: ID={$newPurchasePlanID}");
 
-          if (!$sourceShipmentID || !$purchasePlanID) {
-            throw new Exception("Missing ShipmentID or PurchasePlanID");
-          }
+                      foreach ($changedWeeks as $weekIdx => $weekChange) {
+                          try {
+                              $weekLabel = $weekChange['week'] ?? '';
+                              $qtyImported = (int)($weekChange['qty_imported'] ?? 0);
+                              $shipmentDateImported = $weekChange['shipment_date_imported'] ?? null;
 
-          $blanketID = $change['BlanketID'] ?? null;
-          $poID = $change['POID'] ?? null;
-          $itemID = $change['ItemID'] ?? null;
-          $itemUnitID = $change['ItemUnitID'] ?? null;
+                              log_message('info', "  Processing new row shipment for week {$weekLabel}, Qty={$qtyImported}");
 
-          // Fetch source shipment data untuk reference (fallback default untuk baris ini).
-          // PENTING: satu baris hasil grouping (ItemDesc+Vendor+Color sama) bisa berisi
-          // CAMPURAN beberapa entry dengan tipe berbeda (plan biasa, Blanket, PO) yang
-          // masing-masing punya ID & tabel sumber sendiri. Nilai $sourceShipment/
-          // $sourceShipmentID di sini HANYA dipakai sebagai fallback default baris;
-          // resolusi yang benar per minggu (sesuai tipe minggu tsb) dilakukan di
-          // dalam loop $changedWeeks di bawah.
-          $sourceShipment = null;
-          
-          // First, try to determine if this is PO or Blanket based on explicit IDs
-          if (!empty($poID) && intval($poID) > 0) {
-            $sourceShipment = $this->db->select('*')
-              ->where('DocID', $poID)
-              ->where('ItemID', $itemID)
-              ->where('ItemUnitID', $itemUnitID)
-              ->order_by('ID', 'DESC')
-              ->limit(1)
-              ->get('tPOPlan')
-              ->row_array();
+                              if ($qtyImported > 0) {
+                                  $this->_create_new_shipment_for_import(
+                                      $newPurchasePlanID,
+                                      $vendorID > 0 ? $vendorID : $vendor,
+                                      $itemID,
+                                      $itemUnitID,
+                                      $color,
+                                      $qtyImported,
+                                      $shipmentDateImported,
+                                      $weekLabel,
+                                      $currentUserID
+                                  );
+                                  log_message('info', "  Shipment created for new plan");
+                              }
+                          } catch (Throwable $shipmentEx) {
+                              $errors[] = "New row week {$weekLabel}: " . $shipmentEx->getMessage();
+                              log_message('error', "New shipment error: " . $shipmentEx->getMessage());
+                          }
+                      }
 
-            if ($sourceShipment) {
-              log_message('info', "  Source tPOPlan found (PO): DocID={$sourceShipment['DocID']}, ItemID={$sourceShipment['ItemID']}, ItemUnitID={$sourceShipment['ItemUnitID']}, Qty={$sourceShipment['Qty']}");
-            }
-          } elseif (!empty($blanketID) && intval($blanketID) > 0) {
-            $sourceShipment = $this->db->select('*')
-              ->where('DocID', $blanketID)
-              ->where('ItemID', $itemID)
-              ->where('ItemUnitID', $itemUnitID)
-              ->order_by('ID', 'DESC')
-              ->limit(1)
-              ->get('tPOPlan')
-              ->row_array();
+                      $sourceShipmentID = -1;
+                      $purchasePlanID = $newPurchasePlanID;
+                      $results_by_mode['new_plan_created']++;
 
-            if ($sourceShipment) {
-              log_message('info', "  Source tPOPlan found (BLANKET): DocID={$sourceShipment['DocID']}, ItemID={$sourceShipment['ItemID']}, ItemUnitID={$sourceShipment['ItemUnitID']}, Qty={$sourceShipment['Qty']}");
-            }
-          }
-          
-          // Fallback: fetch dari dbtPurchasePlanDtlShipment jika tidak ada PO/Blanket
-          if (!$sourceShipment) {
-            $sourceShipment = $this->db->select('*')
-              ->where('ID', $sourceShipmentID)
-              ->get('dbtPurchasePlanDtlShipment')
-              ->row_array();
-
-            if ($sourceShipment) {
-              log_message('info', "  Source shipment found (Blanket): Vendor={$sourceShipment['Vendor']}, Batch={$sourceShipment['Batch']}");
-            }
-          }
-
-          if (!$sourceShipment) {
-            throw new Exception("Source shipment not found for ShipmentID {$sourceShipmentID}");
-          }
-
-          // Process setiap changed week dengan mode detection PER WEEK
-          foreach ($changedWeeks as $weekIdx => $weekChange) {
-            try {
-              $mode = strtolower(trim($weekChange['mode'] ?? 'unknown'));
-              $weekLabel = $weekChange['week'] ?? '';
-              $qtyImported = (int)($weekChange['qty_imported'] ?? 0);
-              $qtyExisting = (int)($weekChange['qty_existing'] ?? 0);
-              $shipmentDateImported = $weekChange['shipment_date_imported'] ?? null;
-              $shipmentDateExisting = $weekChange['shipment_date_existing'] ?? null;
-              $existingShipments = $weekChange['existingShipments'] ?? [];
-
-              //  NEW: Detect isPOPlan PER WEEK (bukan global untuk seluruh change)
-              $sourceShipmentData = $weekChange['sourceShipmentData'] ?? [];
-              $isPOPlan = false;
-              $docID = null;
-              $poType = null;
-
-              // Check closed value dari week ini SPECIFICALLY
-              $closedValue = (int)($sourceShipmentData['closed'] ?? 0);
-              $weekBlanketID = $sourceShipmentData['BlanketID'] ?? null;
-              $weekPOID = $sourceShipmentData['POID'] ?? null;
-
-              //  PRIORITY: BlanketID > POID (untuk handling edge case split Blanket yang punya POID ref)
-              if (!empty($weekBlanketID) && intval($weekBlanketID) > 0) {
-                // HAS BlanketID: prioritaskan Blanket terlepas ada POID atau tidak
-                $isPOPlan = true;
-                $docID = $weekBlanketID;
-                $poType = 'blanket';
-                log_message('info', "    Week {$weekLabel}: Detected as BLANKET (BlanketID={$weekBlanketID}, priority over POID)");
-              } 
-              elseif (!empty($weekPOID) && intval($weekPOID) > 0) {
-                // NO BlanketID, HAS POID: gunakan PO
-                $isPOPlan = true;
-                $docID = $weekPOID;
-                $poType = 'po';
-                log_message('info', "    Week {$weekLabel}: Detected as PO (POID={$weekPOID})");
-              } 
-              elseif ($closedValue === 2) {
-                $fallbackDocID = !empty($weekPOID) ? $weekPOID : $poID;
-                if (!empty($fallbackDocID) && intval($fallbackDocID) > 0) {
-                  $isPOPlan = true;
-                  $docID = $fallbackDocID;
-                  $poType = 'po';
-                  log_message('info', "    Week {$weekLabel}: Detected as PO (closed=2 fallback, DocID={$docID})");
-                } else {
-                  log_message('info', "    Week {$weekLabel}: closed=2 fallback tapi tidak ada POID, treat as regular shipment");
-                }
-              }
-              elseif ($closedValue === 1) {
-                $fallbackDocID = !empty($weekBlanketID) ? $weekBlanketID : $blanketID;
-                if (!empty($fallbackDocID) && intval($fallbackDocID) > 0) {
-                  $isPOPlan = true;
-                  $docID = $fallbackDocID;
-                  $poType = 'blanket';
-                  log_message('info', "    Week {$weekLabel}: Detected as BLANKET (closed=1 fallback, DocID={$docID})");
-                } else {
-                  log_message('info', "    Week {$weekLabel}: closed=1 fallback tapi tidak ada BlanketID, treat as regular shipment");
-                }
-              }
-
-              log_message('info', "  Week {$weekIdx}: Mode={$mode}, Week={$weekLabel}, isPOPlan={$isPOPlan}, DocID={$docID}, Type={$poType}, Qty: {$qtyExisting}->{$qtyImported}, Shipments=" . count($existingShipments));
-
-              $weekShipmentID = $sourceShipmentID;
-              if (!empty($existingShipments) && is_array($existingShipments)) {
-                foreach ($existingShipments as $shipment) {
-                  if (!empty($shipment['shipmentId'])) {
-                    $weekShipmentID = $shipment['shipmentId'];
-                    break;
+                      continue;
                   }
-                }
-              }
 
-              $weekItemID = $sourceShipmentData['ItemID'] ?? $itemID;
-              $weekItemUnitID = $sourceShipmentData['ItemUnitID'] ?? $itemUnitID;
-              $weekSourceShipment = $sourceShipment;
-              $sourceIsFromPOPlan = isset($sourceShipment['DocID']) && !array_key_exists('Vendor', $sourceShipment);
-
-
-              if ($isPOPlan) {
-                $hasConcreteShipmentID = !empty($existingShipments) && is_array($existingShipments) && (int)$weekShipmentID !== (int)$sourceShipmentID;
-
-                if ($hasConcreteShipmentID) {
-                  $weekSourceShipment = $this->db->select('*')
-                    ->where('ID', $weekShipmentID)
-                    ->get('tPOPlan')
-                    ->row_array();
-
-                  if (!$weekSourceShipment) {
-                    $fallbackShipment = $this->db->select('*')
-                      ->where('ID', $weekShipmentID)
-                      ->get('dbtPurchasePlanDtlShipment')
-                      ->row_array();
-                    if ($fallbackShipment) {
-                      $weekSourceShipment = $fallbackShipment;
-                      $isPOPlan = false;
-                      log_message('info', "    Week {$weekLabel}: ID {$weekShipmentID} ternyata di dbtPurchasePlanDtlShipment, bukan tPOPlan - isPOPlan dikoreksi ke false");
-                    }
+                  if (!$sourceShipmentID || !$purchasePlanID) {
+                      throw new Exception("Missing ShipmentID or PurchasePlanID");
                   }
-                } else {
-                  $rowLevelDocID = !empty($poID) ? $poID : (!empty($blanketID) ? $blanketID : null);
-                  if (!$sourceIsFromPOPlan || (int)$docID !== (int)$rowLevelDocID) {
-                    $weekSourceShipment = $this->db->select('*')
-                      ->where('DocID', $docID)
-                      ->where('ItemID', $weekItemID)
-                      ->where('ItemUnitID', $weekItemUnitID)
-                      ->order_by('ID', 'DESC')
-                      ->limit(1)
-                      ->get('tPOPlan')
-                      ->row_array();
-                  }
-                }
-                if (!empty($weekSourceShipment['ID'])) {
-                  $weekShipmentID = $weekSourceShipment['ID'];
-                }
-              } else {
-                if ($sourceIsFromPOPlan || (int)$weekShipmentID !== (int)$sourceShipmentID) {
-                  $weekSourceShipment = $this->db->select('*')
-                    ->where('ID', $weekShipmentID)
-                    ->get('dbtPurchasePlanDtlShipment')
-                    ->row_array();
-                }
-              }
 
-              if (!$weekSourceShipment) {
-                throw new Exception("Source data not found for week {$weekLabel} (ID {$weekShipmentID})");
-              }
+                  $blanketID = $change['BlanketID'] ?? null;
+                  $poID = $change['POID'] ?? null;
+                  $itemID = $change['ItemID'] ?? null;
+                  $itemUnitID = $change['ItemUnitID'] ?? null;
 
-              // Route ke handler sesuai mode
-              switch ($mode) {
-                case 'insert':
-                  $this->_handle_insert_mode($weekSourceShipment, $purchasePlanID, $weekLabel, $qtyImported, $shipmentDateImported, $currentUserID, $isPOPlan, $docID, $poType);
-                  $results_by_mode['insert']++;
-                  break;
-
-                case 'update_same':
-                case 'overwrite_qty':
-                  $this->_handle_update_same_mode($weekShipmentID, $qtyImported, $weekLabel, $currentUserID, $isPOPlan, $docID);
-                  $results_by_mode[$mode]++;
-                  break;
-
-                case 'full_move':
-                  $dateForFullMove = !empty($weekChange['shipment_date_move_to']) 
-                    ? $weekChange['shipment_date_move_to'] 
-                    : $shipmentDateImported;
-                  $weekForFullMove = !empty($weekChange['week_move_to']) 
-                    ? $weekChange['week_move_to'] 
-                    : $weekLabel;
+                  $sourceShipment = null;
                   
-                  log_message('info', "   FULL_MOVE: Using shipment_date_move_to={$dateForFullMove}, week_move_to={$weekForFullMove}");
-       
-                  $this->_handle_full_move_mode($weekShipmentID, $dateForFullMove, $weekForFullMove, $currentUserID, $isPOPlan, $docID, $weekSourceShipment);
-                  $results_by_mode['full_move']++;
-                  break;
+                  if (!empty($poID) && intval($poID) > 0) {
+                      $sourceShipment = $this->db->select('*')
+                          ->where('DocID', $poID)
+                          ->where('ItemID', $itemID)
+                          ->where('ItemUnitID', $itemUnitID)
+                          ->order_by('ID', 'DESC')
+                          ->limit(1)
+                          ->get('tPOPlan')
+                          ->row_array();
 
-                case 'partial_split':
-                  $this->_handle_partial_split_mode($weekShipmentID, $weekSourceShipment, $purchasePlanID, $qtyImported, $qtyExisting, $shipmentDateImported, $weekLabel, $currentUserID, $isPOPlan, $docID);
-                  $results_by_mode['partial_split']++;
-                  break;
+                      if ($sourceShipment) {
+                          log_message('info', "  Source tPOPlan found (PO): DocID={$sourceShipment['DocID']}, ItemID={$sourceShipment['ItemID']}, ItemUnitID={$sourceShipment['ItemUnitID']}, Qty={$sourceShipment['Qty']}");
+                      }
+                  } elseif (!empty($blanketID) && intval($blanketID) > 0) {
+                      $sourceShipment = $this->db->select('*')
+                          ->where('DocID', $blanketID)
+                          ->where('ItemID', $itemID)
+                          ->where('ItemUnitID', $itemUnitID)
+                          ->order_by('ID', 'DESC')
+                          ->limit(1)
+                          ->get('tPOPlan')
+                          ->row_array();
 
-                case 'override':
-                  $this->_handle_override_mode($weekShipmentID, $weekSourceShipment, $purchasePlanID, $qtyImported, $shipmentDateImported, $weekLabel, $currentUserID, $isPOPlan, $docID);
-                  $results_by_mode['override']++;
-                  break;
+                      if ($sourceShipment) {
+                          log_message('info', "  Source tPOPlan found (BLANKET): DocID={$sourceShipment['DocID']}, ItemID={$sourceShipment['ItemID']}, ItemUnitID={$sourceShipment['ItemUnitID']}, Qty={$sourceShipment['Qty']}");
+                      }
+                  }
+                  
+                  if (!$sourceShipment) {
+                      $sourceShipment = $this->db->select('*')
+                          ->where('ID', $sourceShipmentID)
+                          ->get('dbtPurchasePlanDtlShipment')
+                          ->row_array();
 
-                case 'delete':
-                  $this->_handle_delete_mode($weekShipmentID, $weekLabel, $currentUserID, $isPOPlan, $docID, $existingShipments);
-                  $results_by_mode['delete']++;
-                  break;
+                      if ($sourceShipment) {
+                          log_message('info', "  Source shipment found: Vendor={$sourceShipment['Vendor']}, Batch={$sourceShipment['Batch']}");
+                      }
+                  }
 
-                default:
-                  throw new Exception("Unknown mode: {$mode}");
+                  if (!$sourceShipment) {
+                      throw new Exception("Source shipment not found for ShipmentID {$sourceShipmentID}");
+                  }
+
+                  foreach ($changedWeeks as $weekIdx => $weekChange) {
+                      try {
+                          $mode = strtolower(trim($weekChange['mode'] ?? 'unknown'));
+                          $weekLabel = $weekChange['week'] ?? '';
+                          $qtyImported = (int)($weekChange['qty_imported'] ?? 0);
+                          $qtyExisting = (int)($weekChange['qty_existing'] ?? 0);
+                          $shipmentDateImported = $weekChange['shipment_date_imported'] ?? null;
+                          $shipmentDateExisting = $weekChange['shipment_date_existing'] ?? null;
+                          $existingShipments = $weekChange['existingShipments'] ?? [];
+
+                          log_message('info', "  Processing week {$weekLabel}: mode={$mode}, qty {$qtyExisting}->{$qtyImported}");
+
+                          if ($qtyExisting == $qtyImported && $mode !== 'full_move') {
+                              log_message('info', "    Skip week {$weekLabel} - no real change (qty same)");
+                              continue;
+                          }
+
+                          if ($mode === 'update_same' && $qtyExisting == $qtyImported) {
+                              log_message('info', "    Skip week {$weekLabel} - update_same with same qty");
+                              continue;
+                          }
+
+                          $sourceShipmentData = $weekChange['sourceShipmentData'] ?? [];
+                          $isPOPlan = false;
+                          $docID = null;
+                          $poType = null;
+
+                          $closedValue = (int)($sourceShipmentData['closed'] ?? 0);
+                          $weekBlanketID = $sourceShipmentData['BlanketID'] ?? null;
+                          $weekPOID = $sourceShipmentData['POID'] ?? null;
+
+                          if (!empty($weekBlanketID) && intval($weekBlanketID) > 0) {
+                              $isPOPlan = true;
+                              $docID = $weekBlanketID;
+                              $poType = 'blanket';
+                              log_message('info', "    Week {$weekLabel}: Detected as BLANKET (BlanketID={$weekBlanketID})");
+                          } elseif (!empty($weekPOID) && intval($weekPOID) > 0) {
+                              $isPOPlan = true;
+                              $docID = $weekPOID;
+                              $poType = 'po';
+                              log_message('info', "    Week {$weekLabel}: Detected as PO (POID={$weekPOID})");
+                          } elseif ($closedValue === 2) {
+                              $fallbackDocID = !empty($weekPOID) ? $weekPOID : $poID;
+                              if (!empty($fallbackDocID) && intval($fallbackDocID) > 0) {
+                                  $isPOPlan = true;
+                                  $docID = $fallbackDocID;
+                                  $poType = 'po';
+                                  log_message('info', "    Week {$weekLabel}: Detected as PO (closed=2 fallback, DocID={$docID})");
+                              }
+                          } elseif ($closedValue === 1) {
+                              $fallbackDocID = !empty($weekBlanketID) ? $weekBlanketID : $blanketID;
+                              if (!empty($fallbackDocID) && intval($fallbackDocID) > 0) {
+                                  $isPOPlan = true;
+                                  $docID = $fallbackDocID;
+                                  $poType = 'blanket';
+                                  log_message('info', "    Week {$weekLabel}: Detected as BLANKET (closed=1 fallback, DocID={$docID})");
+                              }
+                          }
+
+                          $weekShipmentID = $sourceShipmentID;
+                          if (!empty($existingShipments) && is_array($existingShipments)) {
+                              foreach ($existingShipments as $shipment) {
+                                  if (!empty($shipment['shipmentId'])) {
+                                      $weekShipmentID = $shipment['shipmentId'];
+                                      break;
+                                  }
+                              }
+                          }
+
+                          $weekItemID = $sourceShipmentData['ItemID'] ?? $itemID;
+                          $weekItemUnitID = $sourceShipmentData['ItemUnitID'] ?? $itemUnitID;
+                          $weekSourceShipment = $sourceShipment;
+                          $sourceIsFromPOPlan = isset($sourceShipment['DocID']) && !array_key_exists('Vendor', $sourceShipment);
+
+                          if ($isPOPlan) {
+                              $hasConcreteShipmentID = !empty($existingShipments) && is_array($existingShipments) && (int)$weekShipmentID !== (int)$sourceShipmentID;
+
+                              if ($hasConcreteShipmentID) {
+                                  $weekSourceShipment = $this->db->select('*')
+                                      ->where('ID', $weekShipmentID)
+                                      ->get('tPOPlan')
+                                      ->row_array();
+
+                                  if (!$weekSourceShipment) {
+                                      $fallbackShipment = $this->db->select('*')
+                                          ->where('ID', $weekShipmentID)
+                                          ->get('dbtPurchasePlanDtlShipment')
+                                          ->row_array();
+                                      if ($fallbackShipment) {
+                                          $weekSourceShipment = $fallbackShipment;
+                                          $isPOPlan = false;
+                                          log_message('info', "    Week {$weekLabel}: ID {$weekShipmentID} di dbtPurchasePlanDtlShipment, isPOPlan=false");
+                                      }
+                                  }
+                              } else {
+                                  $rowLevelDocID = !empty($poID) ? $poID : (!empty($blanketID) ? $blanketID : null);
+                                  if (!$sourceIsFromPOPlan || (int)$docID !== (int)$rowLevelDocID) {
+                                      $weekSourceShipment = $this->db->select('*')
+                                          ->where('DocID', $docID)
+                                          ->where('ItemID', $weekItemID)
+                                          ->where('ItemUnitID', $weekItemUnitID)
+                                          ->order_by('ID', 'DESC')
+                                          ->limit(1)
+                                          ->get('tPOPlan')
+                                          ->row_array();
+                                  }
+                              }
+                              if (!empty($weekSourceShipment['ID'])) {
+                                  $weekShipmentID = $weekSourceShipment['ID'];
+                              }
+                          } else {
+                              if ($sourceIsFromPOPlan || (int)$weekShipmentID !== (int)$sourceShipmentID) {
+                                  $weekSourceShipment = $this->db->select('*')
+                                      ->where('ID', $weekShipmentID)
+                                      ->get('dbtPurchasePlanDtlShipment')
+                                      ->row_array();
+                              }
+                          }
+
+                          if (!$weekSourceShipment) {
+                              throw new Exception("Source data not found for week {$weekLabel} (ID {$weekShipmentID})");
+                          }
+
+                          log_message('info', "  Executing mode {$mode} for week {$weekLabel}");
+                          
+                          switch ($mode) {
+                              case 'insert':
+                                  $this->_handle_insert_mode($weekSourceShipment, $purchasePlanID, $weekLabel, $qtyImported, $shipmentDateImported, $currentUserID, $isPOPlan, $docID, $poType);
+                                  $results_by_mode['insert']++;
+                                  break;
+
+                              case 'update_same':
+                              case 'overwrite_qty':
+                                  $this->_handle_update_same_mode($weekShipmentID, $qtyImported, $weekLabel, $currentUserID, $isPOPlan, $docID);
+                                  $results_by_mode[$mode]++;
+                                  break;
+
+                              case 'full_move':
+                                  $dateForFullMove = !empty($weekChange['shipment_date_move_to']) 
+                                      ? $weekChange['shipment_date_move_to'] 
+                                      : $shipmentDateImported;
+                                  $weekForFullMove = !empty($weekChange['week_move_to']) 
+                                      ? $weekChange['week_move_to'] 
+                                      : $weekLabel;
+                                  
+                                  log_message('info', "   FULL_MOVE: Using shipment_date_move_to={$dateForFullMove}, week_move_to={$weekForFullMove}");
+                      
+                                  $this->_handle_full_move_mode($weekShipmentID, $dateForFullMove, $weekForFullMove, $currentUserID, $isPOPlan, $docID, $weekSourceShipment);
+                                  $results_by_mode['full_move']++;
+                                  break;
+
+                              case 'partial_split':
+                                  $this->_handle_partial_split_mode($weekShipmentID, $weekSourceShipment, $purchasePlanID, $qtyImported, $qtyExisting, $shipmentDateImported, $weekLabel, $currentUserID, $isPOPlan, $docID);
+                                  $results_by_mode['partial_split']++;
+                                  break;
+
+                              case 'override':
+                                  $this->_handle_override_mode($weekShipmentID, $weekSourceShipment, $purchasePlanID, $qtyImported, $shipmentDateImported, $weekLabel, $currentUserID, $isPOPlan, $docID);
+                                  $results_by_mode['override']++;
+                                  break;
+
+                              case 'delete':
+                                  $this->_handle_delete_mode($weekShipmentID, $weekLabel, $currentUserID, $isPOPlan, $docID, $existingShipments);
+                                  $results_by_mode['delete']++;
+                                  break;
+
+                              default:
+                                  throw new Exception("Unknown mode: {$mode}");
+                          }
+
+                          log_message('info', " Mode {$mode} processed successfully");
+
+                      } catch (Throwable $weekEx) {
+                          $errors[] = "Week {$weekLabel} ({$mode}): " . $weekEx->getMessage();
+                          log_message('error', "Week processing error: " . $weekEx->getMessage());
+                      }
+                  }
+
+              } catch (Throwable $changeEx) {
+                  $errors[] = "Change {$changeIdx}: " . $changeEx->getMessage();
+                  log_message('error', "Change processing error: " . $changeEx->getMessage());
               }
-
-              log_message('info', " Mode {$mode} processed successfully");
-
-            } catch (Throwable $weekEx) {
-              $errors[] = "Week {$weekLabel} ({$mode}): " . $weekEx->getMessage();
-              log_message('error', "Week processing error: " . $weekEx->getMessage());
-            }
           }
 
-        } catch (Throwable $changeEx) {
-          $errors[] = "Change {$changeIdx}: " . $changeEx->getMessage();
-          log_message('error', "Change processing error: " . $changeEx->getMessage());
-        }
+          $this->db->trans_complete();
+
+          if ($this->db->trans_status() === FALSE) {
+              throw new Exception('Transaction failed');
+          }
+
+          log_message('info', "=== IMPORT END ===");
+          log_message('info', 'Results by mode: ' . json_encode($results_by_mode));
+
+          http_response_code(200);
+          echo json_encode([
+              'status' => 'success',
+              'total_processed' => count($groupedChanges),
+              'results_by_mode' => $results_by_mode,
+              'errors' => $errors,
+              'message' => 'Import completed successfully',
+              'debug_logs' => $debugLogs
+          ]);
+
+      } catch (Throwable $e) {
+          $this->db->trans_rollback();
+          
+          $exceptionMsg = $e->getMessage();
+          $debugLogs[] = '[EXCEPTION] ' . $exceptionMsg;
+          $debugLogs[] = '[FILE] ' . $e->getFile() . ':' . $e->getLine();
+          
+          log_message('error', '=== IMPORT EXCEPTION ===');
+          log_message('error', 'Message: ' . $exceptionMsg);
+          log_message('error', 'File: ' . $e->getFile() . ':' . $e->getLine());
+          log_message('error', 'Trace: ' . $e->getTraceAsString());
+          
+          http_response_code(500);
+          echo json_encode([
+              'status' => 'error',
+              'message' => 'Server error: ' . $exceptionMsg,
+              'debug_logs' => $debugLogs
+          ]);
+      }
+  }
+
+  private function _validate_week_duplicates($changes)
+  {
+      $errors = [];
+      $weekGroups = [];
+
+      foreach ($changes as $change) {
+          $changedWeeks = $change['changedWeeks'] ?? [];
+          
+          foreach ($changedWeeks as $weekChange) {
+              $isModified = isset($weekChange['_isUserModified']) && $weekChange['_isUserModified'] === true;
+              
+              if (!$isModified) {
+                  continue;
+              }
+
+              $week = $weekChange['week'] ?? '';
+              if (empty($week)) {
+                  continue;
+              }
+
+              if (!isset($weekGroups[$week])) {
+                  $weekGroups[$week] = [];
+              }
+
+              $weekGroups[$week][] = [
+                  'shipmentId' => $change['ShipmentID'] ?? null,
+                  'mode' => $weekChange['mode'] ?? 'unknown',
+                  'qty' => $weekChange['qty_imported'] ?? 0
+              ];
+          }
       }
 
-      $this->db->trans_complete();
-
-      if ($this->db->trans_status() === FALSE) {
-        throw new Exception('Transaction failed');
+      foreach ($weekGroups as $week => $items) {
+          if (count($items) > 1) {
+              $shipmentIds = array_unique(array_column($items, 'shipmentId'));
+              $shipmentIds = array_filter($shipmentIds);
+              
+              if (!empty($shipmentIds)) {
+                  $errors[] = "Minggu {$week} terdiri dari beberapa data (ShipmentID: " . implode(', ', $shipmentIds) . "). Harap ubah di website.";
+              } else {
+                  $errors[] = "Minggu {$week} terdiri dari beberapa data. Harap ubah di website.";
+              }
+          }
       }
 
-      log_message('info', "=== IMPORT END ===");
-      log_message('info', 'Results by mode: ' . json_encode($results_by_mode));
-
-      // Response dengan mode breakdown
-      http_response_code(200);
-      echo json_encode([
-        'status' => 'success',
-        'total_processed' => count($changes),
-        'results_by_mode' => $results_by_mode,
-        'errors' => $errors,
-        'message' => 'Import completed successfully',
-        'debug_logs' => $debugLogs
-      ]);
-
-    } catch (Throwable $e) {
-      $this->db->trans_rollback();
-      
-      $exceptionMsg = $e->getMessage();
-      $debugLogs[] = '[EXCEPTION] ' . $exceptionMsg;
-      $debugLogs[] = '[FILE] ' . $e->getFile() . ':' . $e->getLine();
-      
-      log_message('error', '=== IMPORT EXCEPTION ===');
-      log_message('error', 'Message: ' . $exceptionMsg);
-      log_message('error', 'File: ' . $e->getFile() . ':' . $e->getLine());
-      log_message('error', 'Trace: ' . $e->getTraceAsString());
-      
-      http_response_code(500);
-      echo json_encode([
-        'status' => 'error',
-        'message' => 'Server error: ' . $exceptionMsg,
-        'debug_logs' => $debugLogs
-      ]);
-    }
+      return $errors;
   }
 
   private function _handle_insert_mode($sourceShipment, $purchasePlanID, $weekLabel, $qtyImported, $shipmentDate, $currentUserID, $isPOPlan = false, $docID = null, $poType = null)
@@ -3344,10 +3433,6 @@ public function getPurchasePlanDtlPayment()
     $mondayDate = $this->_parse_week_date($weekLabel, $shipmentDate);
 
     if ($isPOPlan) {
-      //  INSERT ke tPOPlan
-      
-      //  FIX: Ensure DocType is set correctly based on poType
-      // Jika DocType belum ada di sourceShipment, tentukan dari poType
       $docType = $sourceShipment['DocType'] ?? null;
       if (!$docType) {
         if ($poType === 'blanket') {
@@ -3359,8 +3444,6 @@ public function getPurchasePlanDtlPayment()
         }
       }
       
-      //  FIX: Ensure ReffShipmentID is set correctly
-      // Jika ini Blanket split, cari ReffShipmentID dari existing Blanket shipment
       $reffShipmentID = $sourceShipment['ReffShipmentID'] ?? null;
       if (!$reffShipmentID && $poType === 'blanket') {
         // Cari dari tabel dbtPurchasePlanDtlShipment tempat BlanketID = $docID
