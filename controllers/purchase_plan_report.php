@@ -3180,13 +3180,6 @@ public function getPurchasePlanDtlPayment()
 
               log_message('info', "  Week {$weekIdx}: Mode={$mode}, Week={$weekLabel}, isPOPlan={$isPOPlan}, DocID={$docID}, Type={$poType}, Qty: {$qtyExisting}->{$qtyImported}, Shipments=" . count($existingShipments));
 
-              // Resolve ID & row sumber yang BENAR untuk minggu ini secara spesifik.
-              // Satu baris (hasil grouping ItemDesc+Vendor+Color) bisa berisi
-              // campuran plan biasa, Blanket, dan PO pada minggu-minggu berbeda -
-              // masing-masing punya tabel sumber & ID sendiri. $sourceShipment/
-              // $sourceShipmentID di level baris hanya representasi salah satu
-              // tipe saja, jadi tidak boleh dipakai langsung untuk minggu dengan
-              // tipe berbeda.
               $weekShipmentID = $sourceShipmentID;
               if (!empty($existingShipments) && is_array($existingShipments)) {
                 foreach ($existingShipments as $shipment) {
@@ -3254,7 +3247,7 @@ public function getPurchasePlanDtlPayment()
                     : $weekLabel;
                   
                   log_message('info', "   FULL_MOVE: Using shipment_date_move_to={$dateForFullMove}, week_move_to={$weekForFullMove}");
-                  
+       
                   $this->_handle_full_move_mode($weekShipmentID, $dateForFullMove, $weekForFullMove, $currentUserID, $isPOPlan, $docID, $weekSourceShipment);
                   $results_by_mode['full_move']++;
                   break;
@@ -3332,8 +3325,6 @@ public function getPurchasePlanDtlPayment()
       ]);
     }
   }
-
-
 
   private function _handle_insert_mode($sourceShipment, $purchasePlanID, $weekLabel, $qtyImported, $shipmentDate, $currentUserID, $isPOPlan = false, $docID = null, $poType = null)
   {
@@ -3525,26 +3516,53 @@ public function getPurchasePlanDtlPayment()
     }
   }
 
-  private function _handle_full_move_mode($sourceShipmentID, $newShipmentDate, $newWeekLabel, $currentUserID, $isPOPlan = false, $docID = null, $sourceShipment = null)
+  private function _handle_full_move_mode($sourceShipmentID, $newShipmentDate, $newWeekLabel, $currentUserID, $isPOPlan = false, $docID = null, $sourceShipment = null, $existingShipments = null)
   {
     $mondayDate = $this->_parse_week_date($newWeekLabel, $newShipmentDate);
 
-    if ($isPOPlan) {
-      //  UPDATE tPOPlan dengan ETD baru
-      $ok = $this->pom->update_po_plan_row($sourceShipmentID, null, $mondayDate);  // Qty tetap, update ETD saja
+    //  FIX (duplikasi/data hilang saat full_move blanket bertanggal campuran):
+    // Satu minggu di report bisa berisi LEBIH DARI SATU baris tPOPlan/shipment
+    // yang digabung (mis. blanket + PO plan yang sama-sama match di minggu itu).
+    // Sebelumnya kode ini hanya memindahkan $sourceShipmentID (baris PERTAMA
+    // saja) dan mengabaikan sisanya, sehingga qty yang pindah tidak lengkap
+    // dan sisa baris lama "nyangkut" di tanggal asal / muncul lagi tergabung
+    // ke baris/minggu lain saat report dibaca ulang. Sekarang SEMUA shipment
+    // yang tercatat di $existingShipments untuk minggu sumber ikut dipindah.
+    $shipmentIDsToMove = [];
+    if (!empty($existingShipments) && is_array($existingShipments)) {
+      foreach ($existingShipments as $existingShipment) {
+        $sid = $existingShipment['shipmentId'] ?? $existingShipment['shipmentID'] ?? null;
+        if (!empty($sid)) {
+          $shipmentIDsToMove[] = $sid;
+        }
+      }
+    }
+    if (empty($shipmentIDsToMove)) {
+      // Fallback: tidak ada detail existingShipments, pakai ID tunggal seperti semula
+      $shipmentIDsToMove[] = $sourceShipmentID;
+    }
+    $shipmentIDsToMove = array_values(array_unique($shipmentIDsToMove));
 
-      if (!$ok) {
-        throw new Exception("Failed to update tPOPlan ID {$sourceShipmentID} for full_move");
+    if ($isPOPlan) {
+      foreach ($shipmentIDsToMove as $sid) {
+        //  UPDATE tPOPlan dengan ETD baru (Qty tetap, update ETD saja)
+        $ok = $this->pom->update_po_plan_row($sid, null, $mondayDate);
+
+        if (!$ok) {
+          throw new Exception("Failed to update tPOPlan ID {$sid} for full_move");
+        }
+
+        log_message('info', " FULL_MOVE PO: tPOPlan {$sid} ETD updated to {$mondayDate}");
       }
 
       // Recalc aging untuk PO/Blanket
       $this->pom->recalc_aging_by_docid($docID);
-      
+
       //  Recalc item trans untuk update dbtItemTrans
       // Jika sourceShipment kosong, fetch dari tPOPlan
       $itemID = null;
       $itemUnitID = null;
-      
+
       if ($sourceShipment && !empty($sourceShipment['ItemID'])) {
         $itemID = $sourceShipment['ItemID'];
         $itemUnitID = $sourceShipment['ItemUnitID'];
@@ -3559,96 +3577,99 @@ public function getPurchasePlanDtlPayment()
           if (!$docID) $docID = $existingRow['DocID'];
         }
       }
-      
+
       if ($itemID && $itemUnitID) {
         $this->pom->recalc_item_trans_by_docid_and_item($docID, $itemID, $itemUnitID);
       }
-
-      log_message('info', " FULL_MOVE PO: tPOPlan {$sourceShipmentID} ETD updated to {$mondayDate}");
     } else {
-      // Original dbtPurchasePlanDtlShipment logic
-      // Get existing shipment untuk copy master data
-      $shipment = $this->db->select('*')
-        ->where('ID', $sourceShipmentID)
-        ->get('dbtPurchasePlanDtlShipment')
-        ->row_array();
+      // Original dbtPurchasePlanDtlShipment logic - sekarang loop utk setiap shipment
+      foreach ($shipmentIDsToMove as $sid) {
+        // Get existing shipment untuk copy master data
+        $shipment = $this->db->select('*')
+          ->where('ID', $sid)
+          ->get('dbtPurchasePlanDtlShipment')
+          ->row_array();
 
-      $oldDate = $shipment['ShipmentDate'];
-      $qty = $shipment['Qty'];
+        if (!$shipment) {
+          log_message('warn', " FULL_MOVE: Shipment {$sid} not found, skip");
+          continue;
+        }
 
-      // Delete old week record
-      $this->db->delete('dbtPurchasePlanDtlShipmentWeek',
-        ['PurchasePlanDtlShipmentID' => $sourceShipmentID]
-      );
+        $oldDate = $shipment['ShipmentDate'];
+        $qty = $shipment['Qty'];
 
-      // Delete shipment lama dari dbtPurchasePlanDtlShipment (benar-benar dihapus)
-      $this->db->delete('dbtPurchasePlanDtlShipment',
-        ['ID' => $sourceShipmentID]
-      );
+        // Delete old week record
+        $this->db->delete('dbtPurchasePlanDtlShipmentWeek',
+          ['PurchasePlanDtlShipmentID' => $sid]
+        );
 
-      // Create shipment baru dengan master data yang sama
-      $newShipmentData = [
-        'Vendor' => $shipment['Vendor'],
-        'ItemID' => $shipment['ItemID'],
-        'ItemUnitID' => $shipment['ItemUnitID'],
-        'PurchasePlanID' => $shipment['PurchasePlanID'],
-        'Color' => $shipment['Color'],
-        'Price' => $shipment['Price'],
-        'PODateEst' => $shipment['PODateEst'],
-        'Term' => $shipment['Term'],
-        'Batch' => $shipment['Batch'],
-        'BlanketID' => $shipment['BlanketID'],
-        'POID' => $shipment['POID'],
-        'Closed' => 0,
-        'ShipmentDate' => $mondayDate,
-        'Qty' => $qty
-      ];
+        // Delete shipment lama dari dbtPurchasePlanDtlShipment (benar-benar dihapus)
+        $this->db->delete('dbtPurchasePlanDtlShipment',
+          ['ID' => $sid]
+        );
 
-      $this->db->insert('dbtPurchasePlanDtlShipment', $newShipmentData);
-      $newShipmentID = $this->db->insert_id();
+        // Create shipment baru dengan master data yang sama
+        $newShipmentData = [
+          'Vendor' => $shipment['Vendor'],
+          'ItemID' => $shipment['ItemID'],
+          'ItemUnitID' => $shipment['ItemUnitID'],
+          'PurchasePlanID' => $shipment['PurchasePlanID'],
+          'Color' => $shipment['Color'],
+          'Price' => $shipment['Price'],
+          'PODateEst' => $shipment['PODateEst'],
+          'Term' => $shipment['Term'],
+          'Batch' => $shipment['Batch'],
+          'BlanketID' => $shipment['BlanketID'],
+          'POID' => $shipment['POID'],
+          'Closed' => 0,
+          'ShipmentDate' => $mondayDate,
+          'Qty' => $qty
+        ];
 
-      // Insert new week record untuk shipment baru
-      $weekData = [
-        'PurchasePlanID' => $shipment['PurchasePlanID'],
-        'PurchasePlanDtlShipmentID' => $newShipmentID,
-        'WeekID' => $newWeekLabel,
-        'ShipmentDate' => $mondayDate,
-        'Qty' => $qty
-      ];
-      $this->db->insert('dbtPurchasePlanDtlShipmentWeek', $weekData);
+        $this->db->insert('dbtPurchasePlanDtlShipment', $newShipmentData);
+        $newShipmentID = $this->db->insert_id();
 
-      // Update history record lama - set EndDate untuk tandai tidak aktif lagi
-      $now = date('Y-m-d H:i:s');
-      $this->db->update('dbtPurchasePlanDtlShipmentHistory',
-        ['EndDate' => $now],
-        ['ShipmentID' => $sourceShipmentID, 'EndDate' => null]
-      );
+        // Insert new week record untuk shipment baru
+        $weekData = [
+          'PurchasePlanID' => $shipment['PurchasePlanID'],
+          'PurchasePlanDtlShipmentID' => $newShipmentID,
+          'WeekID' => $newWeekLabel,
+          'ShipmentDate' => $mondayDate,
+          'Qty' => $qty
+        ];
+        $this->db->insert('dbtPurchasePlanDtlShipmentWeek', $weekData);
 
-      // Record history - insert record baru untuk shipment baru dengan shipment date yang baru
-      $historyData = [
-        'ShipmentID' => (int)$newShipmentID,
-        'Vendor' => (int)$shipment['Vendor'],
-        'ItemID' => (int)$shipment['ItemID'],
-        'ItemUnitID' => (int)$shipment['ItemUnitID'],
-        'PurchasePlanID' => (int)$shipment['PurchasePlanID'],
-        'Color' => $shipment['Color'] ?? null,
-        'ShipmentDate' => $mondayDate,
-        'Qty' => (int)$qty,
-        'Price' => $shipment['Price'] ?? null,
-        'PODateEst' => $shipment['PODateEst'] ?? null,
-        'Term' => $shipment['Term'] ?? null,
-        'Batch' => $shipment['Batch'] ?? null,
-        'BlanketID' => $shipment['BlanketID'] ?? null,
-        'POID' => $shipment['POID'] ?? null,
-        'Closed' => 0,
-        'StartDate' => $now,
-        'EndDate' => null,
-        'EditDate' => $now,
-        'EditUserID' => (int)$currentUserID,
-      ];
-      $this->db->insert('dbtPurchasePlanDtlShipmentHistory', $historyData);
+        $now = date('Y-m-d H:i:s');
+        $this->db->update('dbtPurchasePlanDtlShipmentHistory',
+          ['EndDate' => $now],
+          ['ShipmentID' => $sid, 'EndDate' => null]
+        );
 
-      log_message('info', " FULL_MOVE: Shipment {$sourceShipmentID} deleted, new {$newShipmentID} created from {$oldDate} to {$mondayDate}");
+        $historyData = [
+          'ShipmentID' => (int)$newShipmentID,
+          'Vendor' => (int)$shipment['Vendor'],
+          'ItemID' => (int)$shipment['ItemID'],
+          'ItemUnitID' => (int)$shipment['ItemUnitID'],
+          'PurchasePlanID' => (int)$shipment['PurchasePlanID'],
+          'Color' => $shipment['Color'] ?? null,
+          'ShipmentDate' => $mondayDate,
+          'Qty' => (int)$qty,
+          'Price' => $shipment['Price'] ?? null,
+          'PODateEst' => $shipment['PODateEst'] ?? null,
+          'Term' => $shipment['Term'] ?? null,
+          'Batch' => $shipment['Batch'] ?? null,
+          'BlanketID' => $shipment['BlanketID'] ?? null,
+          'POID' => $shipment['POID'] ?? null,
+          'Closed' => 0,
+          'StartDate' => $now,
+          'EndDate' => null,
+          'EditDate' => $now,
+          'EditUserID' => (int)$currentUserID,
+        ];
+        $this->db->insert('dbtPurchasePlanDtlShipmentHistory', $historyData);
+
+        log_message('info', " FULL_MOVE: Shipment {$sid} deleted, new {$newShipmentID} created from {$oldDate} to {$mondayDate}");
+      }
     }
   }
 
@@ -3662,8 +3683,7 @@ public function getPurchasePlanDtlPayment()
     }
 
     if ($isPOPlan) {
-      //  SPLIT tPOPlan: Update qty lama + Insert qty baru
-      // Ambil ETD, ItemID, ItemUnitID, DocID yang sekarang untuk update row lama
+
       $existing = $this->db->select('ETD, ItemID, ItemUnitID, DocID')
         ->where('ID', $sourceShipmentID)
         ->get('tPOPlan')
@@ -3681,8 +3701,6 @@ public function getPurchasePlanDtlPayment()
       $docIDForSync = $existing['DocID'] ?? $docID;
       $this->pom->recalc_aging_by_docid($docIDForSync);
       
-      //  Recalc item trans untuk update dbtItemTrans
-      // Gunakan ItemID dari existing row atau dari sourceShipment
       $itemID = $sourceShipment['ItemID'] ?? $existing['ItemID'];
       $itemUnitID = $sourceShipment['ItemUnitID'] ?? $existing['ItemUnitID'];
       
@@ -3692,8 +3710,6 @@ public function getPurchasePlanDtlPayment()
 
       log_message('info', " PARTIAL_SPLIT PO: tPOPlan {$sourceShipmentID} split into {$qtySisa} + {$qtyImported}");
     } else {
-      // Original dbtPurchasePlanDtlShipment logic
-      // Update shipment lama dengan qty sisa
       $this->db->update('dbtPurchasePlanDtlShipment',
         ['Qty' => $qtySisa],
         ['ID' => $sourceShipmentID]
@@ -3872,29 +3888,45 @@ public function getPurchasePlanDtlPayment()
   private function _handle_delete_mode($sourceShipmentID, $weekLabel, $currentUserID, $isPOPlan = false, $docID = null, $existingShipments = null)
   {
     if ($isPOPlan) {
-      // Get ItemID, ItemUnitID, DocID sebelum delete
-      $poRow = $this->db->select('ItemID, ItemUnitID, DocID')
-        ->where('ID', $sourceShipmentID)
-        ->get('tPOPlan')
-        ->row_array();
-      
-      $this->db->delete('tPOPlan', ['ID' => $sourceShipmentID]);
-
-      // Recalc aging untuk PO/Blanket
-      $docIDForSync = !empty($poRow) ? $poRow['DocID'] : $docID;
-      $this->pom->recalc_aging_by_docid($docIDForSync);
-      
-      //  Recalc item trans untuk update dbtItemTrans setelah delete
-      if (!empty($poRow)) {
-        $this->pom->recalc_item_trans_by_docid_and_item($docIDForSync, $poRow['ItemID'], $poRow['ItemUnitID']);
+      $poIDsToDelete = [];
+      if (!empty($existingShipments) && is_array($existingShipments)) {
+        foreach ($existingShipments as $existingShipment) {
+          $sid = $existingShipment['shipmentId'] ?? $existingShipment['shipmentID'] ?? null;
+          if (!empty($sid)) {
+            $poIDsToDelete[] = $sid;
+          }
+        }
       }
+      if (empty($poIDsToDelete)) {
+        $poIDsToDelete[] = $sourceShipmentID;
+      }
+      $poIDsToDelete = array_values(array_unique($poIDsToDelete));
 
-      log_message('info', "   tPOPlan {$sourceShipmentID} deleted from database");
+      $docIDForSync = $docID;
+      foreach ($poIDsToDelete as $poIDToDelete) {
+        $poRow = $this->db->select('ItemID, ItemUnitID, DocID')
+          ->where('ID', $poIDToDelete)
+          ->get('tPOPlan')
+          ->row_array();
+
+        if (!$poRow) {
+          log_message('warn', "   tPOPlan {$poIDToDelete} not found for deletion");
+          continue;
+        }
+
+        $this->db->delete('tPOPlan', ['ID' => $poIDToDelete]);
+
+        $docIDForSync = $poRow['DocID'];
+        $this->pom->recalc_aging_by_docid($docIDForSync);
+        $this->pom->recalc_item_trans_by_docid_and_item($docIDForSync, $poRow['ItemID'], $poRow['ItemUnitID']);
+
+        log_message('info', "   tPOPlan {$poIDToDelete} deleted from database");
+      }
     } else {
       $shipmentIDsToDelete = [];
       
       if (!empty($existingShipments) && is_array($existingShipments)) {
-        // Iterate each existing shipment dan collect ID-nya
+        
         foreach ($existingShipments as $existingShipment) {
           $shipmentIDToDelete = $existingShipment['shipmentId'] ?? $existingShipment['shipmentID'] ?? null;
           if (!empty($shipmentIDToDelete)) {
@@ -3903,14 +3935,12 @@ public function getPurchasePlanDtlPayment()
         }
       }
       
-      // Fallback: jika tidak ada existingShipments, gunakan sourceShipmentID
       if (empty($shipmentIDsToDelete)) {
         $shipmentIDsToDelete[] = $sourceShipmentID;
       }
       
       log_message('info', "   DELETE: Processing " . count($shipmentIDsToDelete) . " shipment(s): " . implode(', ', $shipmentIDsToDelete));
       
-      // Delete SETIAP shipment yang ada di list
       foreach ($shipmentIDsToDelete as $shipmentIDToDelete) {
         // Get shipment untuk audit
         $shipment = $this->db->select('*')
@@ -3919,17 +3949,13 @@ public function getPurchasePlanDtlPayment()
           ->row_array();
 
         if ($shipment) {
-          // Delete ALL week records dari dbtPurchasePlanDtlShipmentWeek
           $this->db->delete('dbtPurchasePlanDtlShipmentWeek',
             ['PurchasePlanDtlShipmentID' => $shipmentIDToDelete]
           );
-
-          // Delete ALL history records dari dbtPurchasePlanDtlShipmentHistory
           $this->db->delete('dbtPurchasePlanDtlShipmentHistory',
             ['ShipmentID' => $shipmentIDToDelete]
           );
 
-          // Delete shipment dari dbtPurchasePlanDtlShipment
           $this->db->delete('dbtPurchasePlanDtlShipment',
             ['ID' => $shipmentIDToDelete]
           );
