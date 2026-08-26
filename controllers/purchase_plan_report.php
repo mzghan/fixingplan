@@ -262,24 +262,7 @@ public function get_purchase_plan_data()
                 ];
             }
         }
-        
-        foreach ($temp_row['weekly_data'] as $weekKey => &$entries) {
-
-            $maxClosed = -1;
-            foreach ($entries as $e) {
-                $maxClosed = max($maxClosed, (int)$e['closed']);
-            }
-
-            $entries = array_values(array_filter($entries, function ($e) use ($maxClosed) {
-                return (int)$e['closed'] === $maxClosed;
-            }));
-        }
-        unset($entries);
-
       }
-
-
-
         $processed_data[] = $temp_row;
     }
 
@@ -3166,16 +3149,26 @@ public function getPurchasePlanDtlPayment()
                 log_message('info', "    Week {$weekLabel}: Detected as PO (POID={$weekPOID})");
               } 
               elseif ($closedValue === 2) {
-                // FALLBACK: gunakan closed value dari sourceShipmentData
-                $isPOPlan = true;
-                $poType = 'po';
-                log_message('info', "    Week {$weekLabel}: Detected as PO (closed=2 fallback)");
-              } 
+                $fallbackDocID = !empty($weekPOID) ? $weekPOID : $poID;
+                if (!empty($fallbackDocID) && intval($fallbackDocID) > 0) {
+                  $isPOPlan = true;
+                  $docID = $fallbackDocID;
+                  $poType = 'po';
+                  log_message('info', "    Week {$weekLabel}: Detected as PO (closed=2 fallback, DocID={$docID})");
+                } else {
+                  log_message('info', "    Week {$weekLabel}: closed=2 fallback tapi tidak ada POID, treat as regular shipment");
+                }
+              }
               elseif ($closedValue === 1) {
-                // FALLBACK: gunakan closed value dari sourceShipmentData
-                $isPOPlan = true;
-                $poType = 'blanket';
-                log_message('info', "    Week {$weekLabel}: Detected as BLANKET (closed=1 fallback)");
+                $fallbackDocID = !empty($weekBlanketID) ? $weekBlanketID : $blanketID;
+                if (!empty($fallbackDocID) && intval($fallbackDocID) > 0) {
+                  $isPOPlan = true;
+                  $docID = $fallbackDocID;
+                  $poType = 'blanket';
+                  log_message('info', "    Week {$weekLabel}: Detected as BLANKET (closed=1 fallback, DocID={$docID})");
+                } else {
+                  log_message('info', "    Week {$weekLabel}: closed=1 fallback tapi tidak ada BlanketID, treat as regular shipment");
+                }
               }
 
               log_message('info', "  Week {$weekIdx}: Mode={$mode}, Week={$weekLabel}, isPOPlan={$isPOPlan}, DocID={$docID}, Type={$poType}, Qty: {$qtyExisting}->{$qtyImported}, Shipments=" . count($existingShipments));
@@ -3193,21 +3186,41 @@ public function getPurchasePlanDtlPayment()
               $weekItemID = $sourceShipmentData['ItemID'] ?? $itemID;
               $weekItemUnitID = $sourceShipmentData['ItemUnitID'] ?? $itemUnitID;
               $weekSourceShipment = $sourceShipment;
-              // Row-level $sourceShipment berasal dari tPOPlan kalau ia punya DocID
-              // tapi tidak punya Vendor (tPOPlan tidak menyimpan Vendor).
               $sourceIsFromPOPlan = isset($sourceShipment['DocID']) && !array_key_exists('Vendor', $sourceShipment);
 
+
               if ($isPOPlan) {
-                $rowLevelDocID = !empty($poID) ? $poID : (!empty($blanketID) ? $blanketID : null);
-                if (!$sourceIsFromPOPlan || (int)$docID !== (int)$rowLevelDocID) {
+                $hasConcreteShipmentID = !empty($existingShipments) && is_array($existingShipments) && (int)$weekShipmentID !== (int)$sourceShipmentID;
+
+                if ($hasConcreteShipmentID) {
                   $weekSourceShipment = $this->db->select('*')
-                    ->where('DocID', $docID)
-                    ->where('ItemID', $weekItemID)
-                    ->where('ItemUnitID', $weekItemUnitID)
-                    ->order_by('ID', 'DESC')
-                    ->limit(1)
+                    ->where('ID', $weekShipmentID)
                     ->get('tPOPlan')
                     ->row_array();
+
+                  if (!$weekSourceShipment) {
+                    $fallbackShipment = $this->db->select('*')
+                      ->where('ID', $weekShipmentID)
+                      ->get('dbtPurchasePlanDtlShipment')
+                      ->row_array();
+                    if ($fallbackShipment) {
+                      $weekSourceShipment = $fallbackShipment;
+                      $isPOPlan = false;
+                      log_message('info', "    Week {$weekLabel}: ID {$weekShipmentID} ternyata di dbtPurchasePlanDtlShipment, bukan tPOPlan - isPOPlan dikoreksi ke false");
+                    }
+                  }
+                } else {
+                  $rowLevelDocID = !empty($poID) ? $poID : (!empty($blanketID) ? $blanketID : null);
+                  if (!$sourceIsFromPOPlan || (int)$docID !== (int)$rowLevelDocID) {
+                    $weekSourceShipment = $this->db->select('*')
+                      ->where('DocID', $docID)
+                      ->where('ItemID', $weekItemID)
+                      ->where('ItemUnitID', $weekItemUnitID)
+                      ->order_by('ID', 'DESC')
+                      ->limit(1)
+                      ->get('tPOPlan')
+                      ->row_array();
+                  }
                 }
                 if (!empty($weekSourceShipment['ID'])) {
                   $weekShipmentID = $weekSourceShipment['ID'];

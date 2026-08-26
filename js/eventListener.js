@@ -5418,63 +5418,67 @@ $(function () {
       }
 
       if (changedWeeks.length >= 2) {
-        const deleteMode = changedWeeks.find((cw) => cw.mode === "delete");
-        const insertMode = changedWeeks.find((cw) => cw.mode === "insert");
+        const insertModes = changedWeeks.filter((cw) => cw.mode === "insert");
+        const usedInsertModes = new Set();
 
-        // Jika ada delete & insert di week berbeda dengan qty yang sama
-        if (
-          deleteMode &&
-          insertMode &&
-          deleteMode.qty_existing === insertMode.qty_imported &&
-          deleteMode.week !== insertMode.week
-        ) {
-          // console.log(
-          //   ` DETECTED FULL_MOVE PATTERN (tPOPlan): ${deleteMode.week}(${deleteMode.qty_existing}) → ${insertMode.week}(${insertMode.qty_imported})`,
-          // );
+        changedWeeks
+          .filter((cw) => cw.mode === "delete")
+          .forEach((deleteMode) => {
+            const insertMode = insertModes.find(
+              (im) =>
+                !usedInsertModes.has(im) &&
+                im.qty_imported === deleteMode.qty_existing &&
+                im.week !== deleteMode.week,
+            );
 
-          let moveToDate = insertMode.shipment_date_imported;
+            if (!insertMode) return; // tidak ada pasangan yang jelas, biarkan sebagai delete biasa
 
-          if (!moveToDate || moveToDate === "") {
-            const insertWeekLabel = insertMode.week;
-            const weekMatch = insertWeekLabel.match(/WW(\d{2})-(\d{2})/);
+            usedInsertModes.add(insertMode);
 
-            if (weekMatch) {
-              const weekYear = 2000 + parseInt(weekMatch[1]);
-              const weekNum = parseInt(weekMatch[2]);
+            let moveToDate = insertMode.shipment_date_imported;
 
-              try {
-                const simple = new Date(weekYear, 0, 4);
-                const dayOfWeek = simple.getDay() || 7;
-                const isoWeekStart = new Date(simple);
-                isoWeekStart.setDate(simple.getDate() - (dayOfWeek - 1));
+            if (!moveToDate || moveToDate === "") {
+              const insertWeekLabel = insertMode.week;
+              const weekMatch = insertWeekLabel.match(/WW(\d{2})-(\d{2})/);
 
-                const monday = new Date(isoWeekStart);
-                monday.setDate(isoWeekStart.getDate() + (weekNum - 1) * 7);
+              if (weekMatch) {
+                const weekYear = 2000 + parseInt(weekMatch[1]);
+                const weekNum = parseInt(weekMatch[2]);
 
-                const yyyy = monday.getFullYear();
-                const mm = String(monday.getMonth() + 1).padStart(2, "0");
-                const dd = String(monday.getDate()).padStart(2, "0");
-                moveToDate = `${yyyy}-${mm}-${dd}`;
+                try {
+                  const simple = new Date(weekYear, 0, 4);
+                  const dayOfWeek = simple.getDay() || 7;
+                  const isoWeekStart = new Date(simple);
+                  isoWeekStart.setDate(simple.getDate() - (dayOfWeek - 1));
 
-                // console.log(
-                //   `  Calculated moveToDate from week label: ${insertWeekLabel} → ${moveToDate}`,
-                // );
-              } catch (e) {
-                console.error(
-                  ` Error calculating date from ${insertWeekLabel}:`,
-                  e,
-                );
+                  const monday = new Date(isoWeekStart);
+                  monday.setDate(isoWeekStart.getDate() + (weekNum - 1) * 7);
+
+                  const yyyy = monday.getFullYear();
+                  const mm = String(monday.getMonth() + 1).padStart(2, "0");
+                  const dd = String(monday.getDate()).padStart(2, "0");
+                  moveToDate = `${yyyy}-${mm}-${dd}`;
+                } catch (e) {
+                  console.error(
+                    ` Error calculating date from ${insertWeekLabel}:`,
+                    e,
+                  );
+                }
               }
             }
+
+            deleteMode.mode = "full_move";
+            deleteMode.week_move_to = insertMode.week;
+            deleteMode.shipment_date_move_to = moveToDate;
+            deleteMode.shipment_date_imported = null;
+          });
+
+        if (usedInsertModes.size > 0) {
+          for (let i = changedWeeks.length - 1; i >= 0; i--) {
+            if (usedInsertModes.has(changedWeeks[i])) {
+              changedWeeks.splice(i, 1);
+            }
           }
-
-          deleteMode.mode = "full_move";
-          deleteMode.week_move_to = insertMode.week;
-          deleteMode.shipment_date_move_to = moveToDate;
-          deleteMode.shipment_date_imported = null;
-
-          const insertIdx = changedWeeks.indexOf(insertMode);
-          changedWeeks.splice(insertIdx, 1);
         }
       }
       const shipmentDataWithWeekDetails = changedWeeks.map((weekChange) => {
@@ -5501,18 +5505,10 @@ $(function () {
                 : matchingRow.Closed || 0,
             BlanketID: firstShipment.BlanketID || matchingRow.BlanketID || null,
             POID: firstShipment.POID || matchingRow.POID || null,
-            // PENTING: pakai ItemID/ItemUnitID milik shipment minggu ini,
-            // bukan milik baris hasil grouping - karena satu baris bisa
-            // menggabungkan beberapa ItemID/ItemUnitID berbeda (grouping
-            // di frontend hanya berdasarkan Vendor+ItemDesc+Color).
             ItemID: firstShipment.itemID || matchingRow.ItemID || null,
             ItemUnitID:
               firstShipment.itemUnitID || matchingRow.ItemUnitID || null,
           };
-
-          // console.log(
-          //   `  Week ${weekChange.week}: Using sourceShipment data from existing shipment - closed=${sourceShipmentForThisWeek.closed}, BlanketID=${sourceShipmentForThisWeek.BlanketID}, POID=${sourceShipmentForThisWeek.POID}`,
-          // );
         } else {
           if (matchingRow.BlanketID && !matchingRow.POID) {
             // Hanya Blanket, tanpa PO
