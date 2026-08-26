@@ -5303,6 +5303,63 @@ $(function () {
       const excelTotalByWeek = {};
       const existingTotalByWeek = {};
 
+      //  ROW-LEVEL SPLIT DETECTION
+      // Split TIDAK ditentukan dari tipe data (pasti PO / pasti Blanket / pasti Plan),
+      // tapi murni dari pola perubahan di baris ini: kalau ada minggu yang qty-nya
+      // dikurangi (masih ada existing data, qty excel < qty existing) DAN di minggu lain
+      // (masih di baris/PO/Blanket/Plan yang sama) muncul data baru (insert, sebelumnya
+      // tidak ada data), maka itu dianggap SPLIT dari satu ke yang lain. Kalau cuma salah
+      // satu yang terjadi (cuma dikurangi tanpa ada insert baru, atau cuma insert baru
+      // tanpa ada yang dikurangi), maka itu bukan split - insert/update biasa.
+      const reducedWeekLabels = [];
+      const newInsertWeekLabels = [];
+      weekColumns.forEach((wc) => {
+        const excelQty = excelByWeek[wc.label].qty;
+        const existingData = existingByWeek[wc.label];
+        const existingQty = existingData?.totalQty || 0;
+        const hasExistingData =
+          existingData !== undefined && existingData !== null;
+
+        // Data yang jadi target split tidak boleh yang statusnya multi-source
+        // (gabungan >1 data), itu tetap harus diblok lewat validasi terpisah.
+        const isMultiSourceWeek =
+          hasExistingData &&
+          Array.isArray(existingData.shipments) &&
+          existingData.shipments.length > 1;
+
+        if (
+          hasExistingData &&
+          !isMultiSourceWeek &&
+          excelQty > 0 &&
+          excelQty < existingQty
+        ) {
+          reducedWeekLabels.push(wc.label);
+        }
+        if (!hasExistingData && excelQty > 0) {
+          newInsertWeekLabels.push(wc.label);
+        }
+      });
+
+      // Pasangkan berurutan: minggu yang dikurangi ke-i <-> minggu insert baru ke-i.
+      // Sisa yang tidak terpasangkan (kalau jumlahnya tidak sama) diproses sebagai
+      // insert/update biasa, bukan split.
+      const splitPairMap = {}; // reducedWeekLabel -> targetWeekLabel
+      const consumedInsertWeeks = new Set();
+      if (reducedWeekLabels.length > 0 && newInsertWeekLabels.length > 0) {
+        const pairCount = Math.min(
+          reducedWeekLabels.length,
+          newInsertWeekLabels.length,
+        );
+        for (let i = 0; i < pairCount; i++) {
+          splitPairMap[reducedWeekLabels[i]] = newInsertWeekLabels[i];
+          consumedInsertWeeks.add(newInsertWeekLabels[i]);
+        }
+        console.log(
+          `  SPLIT terdeteksi di baris ini: ${pairCount} pasangan (reduced -> insert baru)`,
+          splitPairMap,
+        );
+      }
+
       weekColumns.forEach((wc) => {
         const excelData = excelByWeek[wc.label];
         const excelQty = excelData.qty;
@@ -5325,8 +5382,12 @@ $(function () {
         );
 
         if (isRealChange) {
-          //  Validasi: kalau WW ini adalah gabungan dari lebih dari 1 data
-          // (PO/Blanket/Plan sejenis), perubahan tidak boleh dilakukan via Excel.
+          if (consumedInsertWeeks.has(wc.label)) {
+            console.log(
+              `      → SKIPPED: ${wc.label} adalah tujuan split dari minggu lain di baris ini`,
+            );
+            return;
+          }
           const isMultiSourceWeek =
             hasExistingData &&
             Array.isArray(existingData.shipments) &&
@@ -5349,7 +5410,18 @@ $(function () {
           }
 
           let mode = "";
-          if (!hasExistingData && excelQty > 0) {
+          let weekMoveTo = null;
+          let shipmentDateMoveTo = null;
+          let qtyMoved = null;
+
+          if (splitPairMap[wc.label]) {
+            const targetLabel = splitPairMap[wc.label];
+            const targetData = excelByWeek[targetLabel];
+            mode = "partial_split";
+            weekMoveTo = targetLabel;
+            shipmentDateMoveTo = targetData.shipmentDate;
+            qtyMoved = targetData.qty;
+          } else if (!hasExistingData && excelQty > 0) {
             mode = "insert";
           } else if (hasExistingData && excelQty === 0) {
             mode = "delete";
@@ -5391,6 +5463,9 @@ $(function () {
             batch_existing: existingData?.firstBatch || null,
             mode: mode,
             existingShipments: existingData?.shipments || [],
+            week_move_to: weekMoveTo,
+            shipment_date_move_to: shipmentDateMoveTo,
+            qty_moved: qtyMoved,
             _isUserModified: true,
           });
         }
@@ -5402,6 +5477,47 @@ $(function () {
       }
 
       console.log(`  Total changes detected: ${changedWeeks.length}`);
+
+      const decreaseCandidates = changedWeeks.filter(
+        (cw) => cw.qty_existing > 0 && cw.qty_imported < cw.qty_existing,
+      );
+      const increaseCandidates = changedWeeks.filter(
+        (cw) => cw.qty_existing === 0 && cw.qty_imported > 0,
+      );
+
+      if (decreaseCandidates.length > 0 && increaseCandidates.length > 0) {
+        console.log(
+          `  SPLIT terdeteksi di baris ini: ${decreaseCandidates.length} minggu berkurang, ${increaseCandidates.length} minggu insert baru`,
+        );
+
+        decreaseCandidates.forEach((decWeek) => {
+          const decDiff = decWeek.qty_existing - decWeek.qty_imported;
+
+          const target = increaseCandidates.find(
+            (incWeek) =>
+              !incWeek._mergedIntoSplit && incWeek.qty_imported === decDiff,
+          );
+
+          if (!target) return;
+
+          target._mergedIntoSplit = true;
+          decWeek.mode = "partial_split";
+          decWeek.week_move_to = target.week;
+          decWeek.shipment_date_move_to = target.shipment_date_imported;
+          decWeek.qty_moved = target.qty_imported;
+
+          console.log(
+            `    Split: ${decWeek.week} (${decWeek.qty_existing}->${decWeek.qty_imported}) ` +
+              `-> pindah ${target.qty_imported} ke ${target.week} (${target.shipment_date_imported})`,
+          );
+        });
+
+        for (let i = changedWeeks.length - 1; i >= 0; i--) {
+          if (changedWeeks[i]._mergedIntoSplit) {
+            changedWeeks.splice(i, 1);
+          }
+        }
+      }
 
       let finalChangedWeeks = [...changedWeeks];
 
@@ -5522,6 +5638,12 @@ $(function () {
     );
 
     if (blockedMultiSourceChanges.length > 0) {
+      //  HARD STOP: WW yang terdiri dari beberapa data (gabungan >1 PO/Blanket/Plan
+      // sejenis) tidak boleh diubah lewat Excel sama sekali. Sebelumnya alert ini
+      // tetap membiarkan user lanjut ("Next"/confirm) untuk WW lain yang valid,
+      // sehingga validasinya seperti tidak jalan. Sekarang begitu ada 1 saja WW yang
+      // terblokir, SELURUH proses import dihentikan - user wajib perbaiki dulu di
+      // website sebelum bisa import Excel lagi (termasuk perubahan valid lainnya).
       const blockedList = blockedMultiSourceChanges
         .map(
           (b) =>
@@ -5532,14 +5654,13 @@ $(function () {
         .join("\n");
 
       alert(
-        ` Beberapa WW tidak diproses karena terdiri dari beberapa data, harap ubah di website dan tidak bisa diubah via excel:\n\n${blockedList}`,
+        ` Import dibatalkan.\n\nWW berikut terdiri dari beberapa data, harap ubah di website dan tidak bisa diubah via excel:\n\n${blockedList}\n\nSilakan perbaiki data di atas melalui website, lalu export ulang sebelum import Excel.`,
       );
+      return;
     }
 
     if (shipmentChanges.length === 0) {
-      if (blockedMultiSourceChanges.length === 0) {
-        alert(" No changes detected in Excel - all data matches the database!");
-      }
+      alert(" No changes detected in Excel - all data matches the database!");
       return;
     }
 

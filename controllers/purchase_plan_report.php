@@ -3013,9 +3013,13 @@ public function getPurchasePlanDtlPayment()
                           'mode' => $weekChange['mode'],
                           'existingShipments' => $weekChange['existingShipments'] ?? [],
                           'sourceShipmentData' => $weekChange['sourceShipmentData'] ?? $change['sourceShipmentData'],
+                          'week_move_to' => $weekChange['week_move_to'] ?? null,
+                          'shipment_date_move_to' => $weekChange['shipment_date_move_to'] ?? null,
+                          'qty_moved' => $weekChange['qty_moved'] ?? null,
                           '_isUserModified' => true
                       ];
                   }
+
               }
           }
           
@@ -3165,6 +3169,13 @@ public function getPurchasePlanDtlPayment()
                           $shipmentDateImported = $weekChange['shipment_date_imported'] ?? null;
                           $shipmentDateExisting = $weekChange['shipment_date_existing'] ?? null;
                           $existingShipments = $weekChange['existingShipments'] ?? [];
+                          //  Split lintas WW (row-level): dipasangkan dari week lain di baris yang
+                          // sama yang datanya "muncul baru" (insert). Kalau field ini ada, artinya
+                          // qty yang benar-benar berpindah = qty_moved (bukan qty_imported minggu ini),
+                          // dan tujuan split adalah week_move_to/shipment_date_move_to.
+                          $qtyMoved = isset($weekChange['qty_moved']) ? (int)$weekChange['qty_moved'] : null;
+                          $weekMoveTo = $weekChange['week_move_to'] ?? null;
+                          $shipmentDateMoveTo = $weekChange['shipment_date_move_to'] ?? null;
 
                           log_message('info', "  Processing week {$weekLabel}: mode={$mode}, qty {$qtyExisting}->{$qtyImported}");
 
@@ -3308,7 +3319,19 @@ public function getPurchasePlanDtlPayment()
                                   break;
 
                               case 'partial_split':
-                                  $this->_handle_partial_split_mode($weekShipmentID, $weekSourceShipment, $purchasePlanID, $qtyImported, $qtyExisting, $shipmentDateImported, $weekLabel, $currentUserID, $isPOPlan, $docID);
+                                  $dateMoveTo = !empty($weekChange['shipment_date_move_to'])
+                                      ? $weekChange['shipment_date_move_to']
+                                      : $shipmentDateImported;
+                                  $weekMoveTo = !empty($weekChange['week_move_to'])
+                                      ? $weekChange['week_move_to']
+                                      : $weekLabel;
+                                  $qtyMoved = isset($weekChange['qty_moved']) && $weekChange['qty_moved'] !== null
+                                      ? (int)$weekChange['qty_moved']
+                                      : null;
+
+                                  log_message('info', "   PARTIAL_SPLIT: Using shipment_date_move_to={$dateMoveTo}, week_move_to={$weekMoveTo}, qty_moved=" . ($qtyMoved ?? 'null(fallback ke qtyExisting-qtyImported)'));
+
+                                  $this->_handle_partial_split_mode($weekShipmentID, $weekSourceShipment, $purchasePlanID, $qtyImported, $qtyExisting, $dateMoveTo, $weekMoveTo, $currentUserID, $isPOPlan, $docID, $qtyMoved);
                                   $results_by_mode['partial_split']++;
                                   break;
 
@@ -3615,15 +3638,6 @@ public function getPurchasePlanDtlPayment()
   private function _handle_full_move_mode($sourceShipmentID, $newShipmentDate, $newWeekLabel, $currentUserID, $isPOPlan = false, $docID = null, $sourceShipment = null, $existingShipments = null)
   {
     $mondayDate = $this->_parse_week_date($newWeekLabel, $newShipmentDate);
-
-    //  FIX (duplikasi/data hilang saat full_move blanket bertanggal campuran):
-    // Satu minggu di report bisa berisi LEBIH DARI SATU baris tPOPlan/shipment
-    // yang digabung (mis. blanket + PO plan yang sama-sama match di minggu itu).
-    // Sebelumnya kode ini hanya memindahkan $sourceShipmentID (baris PERTAMA
-    // saja) dan mengabaikan sisanya, sehingga qty yang pindah tidak lengkap
-    // dan sisa baris lama "nyangkut" di tanggal asal / muncul lagi tergabung
-    // ke baris/minggu lain saat report dibaca ulang. Sekarang SEMUA shipment
-    // yang tercatat di $existingShipments untuk minggu sumber ikut dipindah.
     $shipmentIDsToMove = [];
     if (!empty($existingShipments) && is_array($existingShipments)) {
       foreach ($existingShipments as $existingShipment) {
@@ -3634,7 +3648,6 @@ public function getPurchasePlanDtlPayment()
       }
     }
     if (empty($shipmentIDsToMove)) {
-      // Fallback: tidak ada detail existingShipments, pakai ID tunggal seperti semula
       $shipmentIDsToMove[] = $sourceShipmentID;
     }
     $shipmentIDsToMove = array_values(array_unique($shipmentIDsToMove));
@@ -3654,8 +3667,6 @@ public function getPurchasePlanDtlPayment()
       // Recalc aging untuk PO/Blanket
       $this->pom->recalc_aging_by_docid($docID);
 
-      //  Recalc item trans untuk update dbtItemTrans
-      // Jika sourceShipment kosong, fetch dari tPOPlan
       $itemID = null;
       $itemUnitID = null;
 
@@ -3769,121 +3780,132 @@ public function getPurchasePlanDtlPayment()
     }
   }
 
-  private function _handle_partial_split_mode($sourceShipmentID, $sourceShipment, $purchasePlanID, $qtyImported, $qtyExisting, $newShipmentDate, $newWeekLabel, $currentUserID, $isPOPlan = false, $docID = null)
+  private function _handle_partial_split_mode($sourceShipmentID, $sourceShipment, $purchasePlanID, $qtyImported, $qtyExisting, $newShipmentDate, $newWeekLabel, $currentUserID, $isPOPlan = false, $docID = null, $qtyMoved = null)
   {
-    $qtySisa = $qtyExisting - $qtyImported;
-    $mondayDate = $this->_parse_week_date($newWeekLabel, $newShipmentDate);
+      // $qtyImported  = qty yang TETAP tinggal di minggu/tanggal ASAL (tidak berubah tanggal)
+      // $qtySplitOff  = qty yang PINDAH ke minggu/tanggal TUJUAN ($newShipmentDate/$newWeekLabel)
+      //
+      // Dulu kode di bawah ini menyimpan qty yang salah di masing-masing baris
+      // (row asal malah disimpan qtySplitOff, row baru malah disimpan qtyImported)
+      // dan $newShipmentDate/$newWeekLabel selalu berisi tanggal minggu asal itu
+      // sendiri (bukan tujuan split yang sebenarnya) karena dispatcher belum
+      // mengirim tujuan split yang benar. Sekarang $newShipmentDate/$newWeekLabel
+      // adalah tujuan split yang sebenarnya (lihat pemanggil), dan qty yang
+      // dipindah pakai $qtyMoved kalau tersedia (hasil deteksi pasangan
+      // berkurang+insert baru di baris yang sama), fallback ke selisih qty.
+      $qtySplitOff = $qtyMoved !== null ? $qtyMoved : ($qtyExisting - $qtyImported);
+      $mondayDate = $this->_parse_week_date($newWeekLabel, $newShipmentDate);
 
-    if ($qtySisa <= 0) {
-      throw new Exception("Invalid split: sisa qty harus > 0, got {$qtySisa}");
-    }
-
-    if ($isPOPlan) {
-
-      $existing = $this->db->select('ETD, ItemID, ItemUnitID, DocID')
-        ->where('ID', $sourceShipmentID)
-        ->get('tPOPlan')
-        ->row_array();
-
-      $currentETD = $existing['ETD'] ?? date('Y-m-d');
-      $ok1 = $this->pom->update_po_plan_row($sourceShipmentID, $qtySisa, $currentETD);  // ETD tetap sama
-      $ok2 = $this->pom->insert_po_plan_row($qtyImported, $mondayDate, $sourceShipmentID);  // Insert row baru
-
-      if (!$ok1 || !$ok2) {
-        throw new Exception("Failed to split tPOPlan {$sourceShipmentID}");
+      if ($qtySplitOff <= 0) {
+          throw new Exception("Invalid split: qty yang dipindah harus > 0, got {$qtySplitOff}");
       }
 
-      // Recalc aging untuk PO/Blanket
-      $docIDForSync = $existing['DocID'] ?? $docID;
-      $this->pom->recalc_aging_by_docid($docIDForSync);
-      
-      $itemID = $sourceShipment['ItemID'] ?? $existing['ItemID'];
-      $itemUnitID = $sourceShipment['ItemUnitID'] ?? $existing['ItemUnitID'];
-      
-      if ($itemID && $itemUnitID) {
-        $this->pom->recalc_item_trans_by_docid_and_item($docIDForSync, $itemID, $itemUnitID);
+      if ($isPOPlan) {
+
+          $existing = $this->db->select('ETD, ItemID, ItemUnitID, DocID')
+              ->where('ID', $sourceShipmentID)
+              ->get('tPOPlan')
+              ->row_array();
+
+          $currentETD = $existing['ETD'] ?? date('Y-m-d');
+          $ok1 = $this->pom->update_po_plan_row($sourceShipmentID, $qtyImported, $currentETD);  // qty yang tetap tinggal, ETD tetap sama
+          $ok2 = $this->pom->insert_po_plan_row($qtySplitOff, $mondayDate, $sourceShipmentID);  // qty yang pindah, di tanggal tujuan
+
+          if (!$ok1 || !$ok2) {
+              throw new Exception("Failed to split tPOPlan {$sourceShipmentID}");
+          }
+
+          // Recalc aging untuk PO/Blanket
+          $docIDForSync = $existing['DocID'] ?? $docID;
+          $this->pom->recalc_aging_by_docid($docIDForSync);
+
+          $itemID = $sourceShipment['ItemID'] ?? $existing['ItemID'];
+          $itemUnitID = $sourceShipment['ItemUnitID'] ?? $existing['ItemUnitID'];
+
+          if ($itemID && $itemUnitID) {
+              $this->pom->recalc_item_trans_by_docid_and_item($docIDForSync, $itemID, $itemUnitID);
+          }
+
+          log_message('info', " PARTIAL_SPLIT PO: tPOPlan {$sourceShipmentID} split into {$qtyImported} (tetap) + {$qtySplitOff} (pindah ke {$mondayDate})");
+      } else {
+          $this->db->update('dbtPurchasePlanDtlShipment',
+              ['Qty' => $qtyImported],
+              ['ID' => $sourceShipmentID]
+          );
+
+          // Update week record untuk shipment lama (qty yang tetap tinggal)
+          $this->db->update('dbtPurchasePlanDtlShipmentWeek',
+              ['Qty' => $qtyImported],
+              ['PurchasePlanDtlShipmentID' => $sourceShipmentID]
+          );
+
+          // Create new shipment untuk qty yang pindah, di tanggal/minggu TUJUAN
+          $newShipmentData = [
+              'Vendor' => $sourceShipment['Vendor'],
+              'ItemID' => $sourceShipment['ItemID'],
+              'ItemUnitID' => $sourceShipment['ItemUnitID'],
+              'PurchasePlanID' => $purchasePlanID,
+              'Color' => $sourceShipment['Color'],
+              'Price' => $sourceShipment['Price'],
+              'PODateEst' => $sourceShipment['PODateEst'],
+              'Term' => $sourceShipment['Term'],
+              'Batch' => $sourceShipment['Batch'],
+              'BlanketID' => $sourceShipment['BlanketID'],
+              'POID' => $sourceShipment['POID'],
+              'Closed' => 0,
+              'ShipmentDate' => $mondayDate,
+              'Qty' => $qtySplitOff
+          ];
+
+          $this->db->insert('dbtPurchasePlanDtlShipment', $newShipmentData);
+          $newShipmentID = $this->db->insert_id();
+
+          // Insert week record untuk shipment baru (di minggu/tanggal tujuan)
+          $weekData = [
+              'PurchasePlanID' => $purchasePlanID,
+              'PurchasePlanDtlShipmentID' => $newShipmentID,
+              'WeekID' => $newWeekLabel,
+              'ShipmentDate' => $mondayDate,
+              'Qty' => $qtySplitOff
+          ];
+          $this->db->insert('dbtPurchasePlanDtlShipmentWeek', $weekData);
+
+          // Update history record lama - set EndDate untuk tandai tidak aktif lagi
+          $now = date('Y-m-d H:i:s');
+          $this->db->update('dbtPurchasePlanDtlShipmentHistory',
+              ['EndDate' => $now],
+              ['ShipmentID' => $sourceShipmentID, 'EndDate' => null]
+          );
+
+          // Insert history baru untuk shipment lama dengan qty yang tetap tinggal
+          $historyOld = [
+              'ShipmentID' => (int)$sourceShipmentID,
+              'Vendor' => (int)$sourceShipment['Vendor'],
+              'ItemID' => (int)$sourceShipment['ItemID'],
+              'ItemUnitID' => (int)$sourceShipment['ItemUnitID'],
+              'PurchasePlanID' => (int)$purchasePlanID,
+              'Color' => $sourceShipment['Color'] ?? null,
+              'ShipmentDate' => $sourceShipment['ShipmentDate'],
+              'Qty' => (int)$qtyImported,
+              'Price' => $sourceShipment['Price'] ?? null,
+              'PODateEst' => $sourceShipment['PODateEst'] ?? null,
+              'Term' => $sourceShipment['Term'] ?? null,
+              'Batch' => $sourceShipment['Batch'] ?? null,
+              'BlanketID' => $sourceShipment['BlanketID'] ?? null,
+              'POID' => $sourceShipment['POID'] ?? null,
+              'Closed' => 0,
+              'StartDate' => $now,
+              'EndDate' => null,
+              'EditDate' => $now,
+              'EditUserID' => (int)$currentUserID,
+          ];
+          $this->db->insert('dbtPurchasePlanDtlShipmentHistory', $historyOld);
+
+          // Record history untuk shipment baru (qty yang pindah)
+          $this->_insert_history($newShipmentID, $sourceShipment, $purchasePlanID, $qtySplitOff, $mondayDate, $currentUserID);
+
+          log_message('info', " PARTIAL_SPLIT: Shipment {$sourceShipmentID} split into {$qtyImported} (tetap) + {$qtySplitOff} (pindah, new: {$newShipmentID} di {$mondayDate})");
       }
-
-      log_message('info', " PARTIAL_SPLIT PO: tPOPlan {$sourceShipmentID} split into {$qtySisa} + {$qtyImported}");
-    } else {
-      $this->db->update('dbtPurchasePlanDtlShipment',
-        ['Qty' => $qtySisa],
-        ['ID' => $sourceShipmentID]
-      );
-
-      // Update week record untuk shipment lama
-      $this->db->update('dbtPurchasePlanDtlShipmentWeek',
-        ['Qty' => $qtySisa],
-        ['PurchasePlanDtlShipmentID' => $sourceShipmentID]
-      );
-
-      // Create new shipment untuk qty yang diimport
-      $newShipmentData = [
-        'Vendor' => $sourceShipment['Vendor'],
-        'ItemID' => $sourceShipment['ItemID'],
-        'ItemUnitID' => $sourceShipment['ItemUnitID'],
-        'PurchasePlanID' => $purchasePlanID,
-        'Color' => $sourceShipment['Color'],
-        'Price' => $sourceShipment['Price'],
-        'PODateEst' => $sourceShipment['PODateEst'],
-        'Term' => $sourceShipment['Term'],
-        'Batch' => $sourceShipment['Batch'],
-        'BlanketID' => $sourceShipment['BlanketID'],
-        'POID' => $sourceShipment['POID'],
-        'Closed' => 0,
-        'ShipmentDate' => $mondayDate,
-        'Qty' => $qtyImported
-      ];
-
-      $this->db->insert('dbtPurchasePlanDtlShipment', $newShipmentData);
-      $newShipmentID = $this->db->insert_id();
-
-      // Insert week record untuk shipment baru
-      $weekData = [
-        'PurchasePlanID' => $purchasePlanID,
-        'PurchasePlanDtlShipmentID' => $newShipmentID,
-        'WeekID' => $newWeekLabel,
-        'ShipmentDate' => $mondayDate,
-        'Qty' => $qtyImported
-      ];
-      $this->db->insert('dbtPurchasePlanDtlShipmentWeek', $weekData);
-
-      // Update history record lama - set EndDate untuk tandai tidak aktif lagi
-      $now = date('Y-m-d H:i:s');
-      $this->db->update('dbtPurchasePlanDtlShipmentHistory',
-        ['EndDate' => $now],
-        ['ShipmentID' => $sourceShipmentID, 'EndDate' => null]
-      );
-
-      // Insert history baru untuk shipment lama dengan qty yang sudah di-split
-      $historyOld = [
-        'ShipmentID' => (int)$sourceShipmentID,
-        'Vendor' => (int)$sourceShipment['Vendor'],
-        'ItemID' => (int)$sourceShipment['ItemID'],
-        'ItemUnitID' => (int)$sourceShipment['ItemUnitID'],
-        'PurchasePlanID' => (int)$purchasePlanID,
-        'Color' => $sourceShipment['Color'] ?? null,
-        'ShipmentDate' => $sourceShipment['ShipmentDate'],
-        'Qty' => (int)$qtySisa,
-        'Price' => $sourceShipment['Price'] ?? null,
-        'PODateEst' => $sourceShipment['PODateEst'] ?? null,
-        'Term' => $sourceShipment['Term'] ?? null,
-        'Batch' => $sourceShipment['Batch'] ?? null,
-        'BlanketID' => $sourceShipment['BlanketID'] ?? null,
-        'POID' => $sourceShipment['POID'] ?? null,
-        'Closed' => 0,
-        'StartDate' => $now,
-        'EndDate' => null,
-        'EditDate' => $now,
-        'EditUserID' => (int)$currentUserID,
-      ];
-      $this->db->insert('dbtPurchasePlanDtlShipmentHistory', $historyOld);
-
-      // Record history untuk shipment baru
-      $this->_insert_history($newShipmentID, $sourceShipment, $purchasePlanID, $qtyImported, $mondayDate, $currentUserID);
-
-      log_message('info', " PARTIAL_SPLIT: Shipment {$sourceShipmentID} split into {$qtySisa} + {$qtyImported} (new: {$newShipmentID})");
-    }
   }
 
   private function _handle_override_mode($sourceShipmentID, $sourceShipment, $purchasePlanID, $qtyImported, $newShipmentDate, $newWeekLabel, $currentUserID, $isPOPlan = false, $docID = null)
