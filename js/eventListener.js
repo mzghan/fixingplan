@@ -4436,36 +4436,12 @@ $(function () {
       }`,
     );
 
-    const noBatch =
-      !rowData.Batch || rowData.Batch === null || rowData.Batch === "";
-    const readonly = noBatch;
-
-    if (readonly) {
-      $("#shipmentBatchTable input, #shipmentBatchTable select").css({
-        backgroundColor: "#f8f9fa",
-        cursor: "not-allowed",
-      });
-      if (readonly) {
-        $("#weekModal .modal-batch-info").append(
-          "<div class='text-danger mt-1'><b> Tidak bisa split karena belum memiliki Batch.</b></div>",
-        );
-
-        $("#saveChangesBtn").prop("disabled", true).css({
-          opacity: 0.6,
-          cursor: "not-allowed",
-        });
-      } else {
-        $("#saveChangesBtn").prop("disabled", false).css({
-          opacity: 1,
-          cursor: "pointer",
-        });
-      }
-    } else {
-      $("#saveChangesBtn").prop("disabled", false).css({
-        opacity: 1,
-        cursor: "pointer",
-      });
-    }
+    //  Validasi "belum punya batch tidak bisa move data" dihilangkan.
+    // Data tanpa batch tetap bisa dipindahkan/diubah melalui website.
+    $("#saveChangesBtn").prop("disabled", false).css({
+      opacity: 1,
+      cursor: "pointer",
+    });
 
     $("#weekModal").data("selectedWeek", week);
     $("#weekModal").data("batchRanges", batchRanges);
@@ -5021,6 +4997,18 @@ $(function () {
 
     const shipmentChanges = [];
 
+    //  FIX: Excel di-export dari data yang SUDAH digabung per Vendor+ItemDesc+Color
+    // (lihat groupPurchasePlanData / currentGroupedData yang dipakai saat export).
+    // Kalau di sini kita membandingkan terhadap allPurchasePlanData yang MASIH MENTAH
+    // (satu baris = satu PO/Blanket/Plan saja), qty 1 WW yang sebenarnya adalah hasil
+    // gabungan beberapa PO/Blanket/Plan akan selalu terlihat "berbeda" walau user
+    // tidak mengubah apa-apa. Maka gunakan basis data yang SAMA (grouped) di sini.
+    const groupedPurchasePlanData = groupPurchasePlanData(allPurchasePlanData);
+
+    // Menampung WW yang isinya gabungan lebih dari 1 data (PO/Blanket/Plan sejenis)
+    // -> tidak boleh diubah lewat Excel, harus lewat website.
+    const blockedMultiSourceChanges = [];
+
     dataRows.forEach((row, rowIdx) => {
       if (!row || row.length < 7) return;
 
@@ -5159,7 +5147,7 @@ $(function () {
         `  Existing row, finding matching row in allPurchasePlanData...`,
       );
 
-      let matchingRow = allPurchasePlanData.find(
+      let matchingRow = groupedPurchasePlanData.find(
         (r) => (r.ShipmentID || 0) === shipmentID,
       );
 
@@ -5168,7 +5156,7 @@ $(function () {
       );
 
       if (!matchingRow && itemCode && vendor) {
-        const fallbackMatches = allPurchasePlanData.filter(
+        const fallbackMatches = groupedPurchasePlanData.filter(
           (r) =>
             (r.ItemCode || "").trim() === itemCode.trim() &&
             (r.Vendor || "").trim() === vendor.trim() &&
@@ -5337,6 +5325,29 @@ $(function () {
         );
 
         if (isRealChange) {
+          //  Validasi: kalau WW ini adalah gabungan dari lebih dari 1 data
+          // (PO/Blanket/Plan sejenis), perubahan tidak boleh dilakukan via Excel.
+          const isMultiSourceWeek =
+            hasExistingData &&
+            Array.isArray(existingData.shipments) &&
+            existingData.shipments.length > 1;
+
+          if (isMultiSourceWeek) {
+            console.warn(
+              `      → BLOCKED: ${wc.label} terdiri dari ${existingData.shipments.length} data, tidak bisa diubah via Excel`,
+            );
+            blockedMultiSourceChanges.push({
+              shipmentID,
+              vendor: matchingRow.Vendor || vendor,
+              itemDesc: matchingRow.ItemDesc || itemDesc,
+              color: matchingRow.Color || color,
+              week: wc.label,
+              qty_existing: existingQty,
+              qty_imported: excelQty,
+            });
+            return; // Skip minggu ini, lanjut ke WW berikutnya
+          }
+
           let mode = "";
           if (!hasExistingData && excelQty > 0) {
             mode = "insert";
@@ -5506,9 +5517,29 @@ $(function () {
 
     console.log("\n=== FINAL SUMMARY ===");
     console.log(`Total shipments with changes: ${shipmentChanges.length}`);
+    console.log(
+      `Total blocked (multi-source) changes: ${blockedMultiSourceChanges.length}`,
+    );
+
+    if (blockedMultiSourceChanges.length > 0) {
+      const blockedList = blockedMultiSourceChanges
+        .map(
+          (b) =>
+            `- ${b.week} | ${b.vendor} - ${b.itemDesc}${
+              b.color ? " (" + b.color + ")" : ""
+            } (${b.qty_existing} → ${b.qty_imported})`,
+        )
+        .join("\n");
+
+      alert(
+        ` Beberapa WW tidak diproses karena terdiri dari beberapa data, harap ubah di website dan tidak bisa diubah via excel:\n\n${blockedList}`,
+      );
+    }
 
     if (shipmentChanges.length === 0) {
-      alert(" No changes detected in Excel - all data matches the database!");
+      if (blockedMultiSourceChanges.length === 0) {
+        alert(" No changes detected in Excel - all data matches the database!");
+      }
       return;
     }
 
