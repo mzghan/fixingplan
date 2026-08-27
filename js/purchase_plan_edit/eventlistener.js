@@ -2,8 +2,6 @@
 let urlParams = new URLSearchParams(window.location.search);
 let idFromUrl = urlParams.get("id");
 let headID = 0;
-let vendorOptionsHTML = "";
-let itemOptionsHTML = "";
 let colorOptionsHTML = "";
 let yearOptionsHTML = "";
 let vendorMap = {};
@@ -46,8 +44,7 @@ let hasCalcChanges = false;
 let isInitialLoadComplete = false; // Flag untuk mencegah markCalcAsChanged saat load awal
 window.globalFinalDtlIdMap = {};
 
-// OPTIMIZATION: Cache flags untuk mencegah rebuild options HTML
-let isItemOptionsCached = false;
+// Cache flag: peta nama vendor (untuk label) cukup ditarik sekali per sesi edit
 let isVendorOptionsCached = false;
 let isColorOptionsCached = false;
 
@@ -2721,149 +2718,61 @@ $(function () {
     return;
   }
 
-  // Muat vendor dan item options terlebih dahulu, lalu data tabel
-  Promise.all([loadVendorOptionsAndMap(), loadColorOptions()])
+  // Vendor & item dropdown sekarang lazy-load lewat AJAX Select2 (lihat
+  // renderTableTengahRows), jadi tidak perlu ditarik semua di awal.
+  // Yang masih perlu dimuat lebih dulu cuma daftar warna (dipakai langsung
+  // sebagai <option> statis) dan peta nama vendor untuk label baris tersimpan.
+  Promise.all([loadVendorNameMap(), loadColorOptions()])
     .then(() => {
       loadInitialPurchasePlanData(idFromUrl);
-      // applyItemOptionsToDOM();
-
-      // Re-inisialisasi Select2 (hapus dulu jika sudah ada)
-      $(".item-select").select2("destroy");
-      $(".vendor-select").select2("destroy");
-      $(".colorColumn").select2("destroy");
-
-      $(".item-select").select2({
-        placeholder: "-- Pilih Item --",
-        minimumResultsForSearch: 1,
-        width: "100%",
-      });
-      $(".vendor-select").select2({
-        placeholder: "-- Pilih Vendor --",
-        minimumResultsForSearch: 1,
-        width: "100%",
-      });
-      $(".colorColumn").select2({
-        placeholder: "-- Pilih Warna --",
-        minimumResultsForSearch: 1,
-        width: "100%",
-      });
     })
     .catch((error) => {
       console.error("Error loading vendor or item options:", error);
-      // console.log("Gagal memuat opsi vendor atau item.");
     });
 });
 
+// Peta ID -> Nama vendor. Dipakai untuk label pre-selected di baris yang sudah
+// tersimpan dan untuk tampilan nama vendor di table kiri/laporan.
+// Endpoint ini mengembalikan SEMUA vendor (bukan endpoint search berpaginasi
+// get_vendor_search yang dipakai dropdown), jadi hasilnya di-cache.
 let arrVendor = {};
-function loadVendorOptionsAndMap() {
-  if (isVendorOptionsCached && vendorOptionsHTML) {
-    console.log("✓ Using cached vendorOptionsHTML");
+function loadVendorNameMap() {
+  if (isVendorOptionsCached) {
     return $.Deferred().resolve().promise();
   }
 
   return $.ajax({
-    url: BASE_URL + "scm/purchasing/purchase_order_plan/get_vendor_search",
+    url:
+      BASE_URL +
+      "scm/purchasing/purchase_order_plan/get_coaattr_customer_vendor",
     type: "POST",
     dataType: "json",
     data: { type: "20010" },
     success: function (data) {
-      const optionsArray = ['<option value="">-- Pilih Vendor --</option>'];
       vendorMap = {};
       vendorMap_reverse = {};
 
       if (data && Array.isArray(data)) {
         data.forEach(function (vendor) {
-          optionsArray.push(
-            `<option value="${vendor.ID}">${vendor.coName}</option>`,
-          );
           vendorMap[vendor.ID] = vendor.coName;
           arrVendor[vendor.ID] = vendor.coName;
           vendorMap_reverse[vendor.coName] = vendor.ID;
         });
       }
 
-      vendorOptionsHTML = optionsArray.join("");
-      isVendorOptionsCached = true; // Set flag cache
-      console.log("✓ Vendor options cached", data.length, "vendors");
+      isVendorOptionsCached = true;
+      console.log(
+        "Vendor name map cached:",
+        Object.keys(vendorMap).length,
+        "vendors",
+      );
     },
     error: function (jqXHR, textStatus, errorThrown) {
-      console.error("Error loading vendor options:", textStatus, errorThrown);
+      console.error("Error loading vendor name map:", textStatus, errorThrown);
     },
   });
 }
 
-// function applyItemOptionsToDOM() {
-//   if (!itemOptionsHTML) {
-//     console.error(
-//       "Item options HTML belum tersedia. loadItemOptions belum selesai?",
-//     );
-//     return;
-//   }
-
-//   // Cari semua select item di halaman
-//   const $dropdowns = $(".item-select");
-
-//   if ($dropdowns.length === 0) {
-//     console.warn("Tidak ada elemen .item-select ditemukan di DOM.");
-//     return;
-//   }
-
-//   $dropdowns.each(function () {
-//     // Set HTML option secara langsung
-//     $(this).html(itemOptionsHTML);
-//   });
-// }
-
-// fungsi load items
-// function loadItemOptions() {
-//   // Return cached version jika sudah ada
-//   if (isItemOptionsCached && itemOptionsHTML) {
-//     console.log("✓ Using cached itemOptionsHTML");
-//     return $.Deferred().resolve().promise();
-//   }
-
-//   return $.ajax({
-//     url: BASE_URL + "scm/purchasing/purchase_order_plan/get_item_list",
-//     type: "GET",
-//     dataType: "json",
-//   })
-//     .done(function (data) {
-//       itemData = Array.isArray(data) ? data : [];
-
-//       // OPTIMIZATION: Gunakan array + join() daripada string concat (+=)
-//       const optionsArray = ['<option value="">-- Pilih Item --</option>'];
-//       itemData.forEach(function (item) {
-//         optionsArray.push(
-//           `<option value="${item.id}" data-code="${item.code}" data-itemunitid="${item.itemunitid}" data-unitname="${item.unitname}">
-//             ${item.code}-${item.description}-${item.unitname}
-//           </option>`,
-//         );
-//       });
-
-//       itemOptionsHTML = optionsArray.join("");
-//       isItemOptionsCached = true; // Set flag cache
-//       console.log("✓ Item options cached", itemData.length, "items");
-//     })
-//     .fail(function (jqXHR, textStatus, errorThrown) {
-//       console.error(
-//         "Kesalahan saat memuat opsi item:",
-//         textStatus,
-//         errorThrown,
-//       );
-//     });
-// }
-function loadItemOptions() {
-  console.log("❌ loadItemOptions disabled (using AJAX Select2)");
-  return $.Deferred().resolve().promise();
-}
-// fungsi untuk render dropdown dari array itemData
-function renderItemDropdown($select) {
-  let html = '<option value="">-- Pilih Item --</option>';
-  itemData.forEach((item) => {
-    html += `<option value="${item.id}">${item.code}-${item.description}</option>`;
-  });
-  $select.html(html);
-}
 // fungsi load color options
 function loadColorOptions() {
   // Return cached version jika sudah ada
@@ -4114,22 +4023,47 @@ function renderTableTengahRows(data, tbody) {
     const wwSelect = tr.querySelector(".wwColumn");
     const $wwSelect = $(wwSelect);
 
-    // Set options HTML
-    vendorSelect.innerHTML =
-      vendorOptionsHTML || '<option value="">No vendors available</option>';
     colorSelect.innerHTML =
       colorOptionsHTML || '<option value="">No items available</option>';
 
+    if (data[i].Vendor) {
+      const vendorLabel = arrVendor[data[i].Vendor] || String(data[i].Vendor);
+      const vendorOption = new Option(vendorLabel, data[i].Vendor, true, true);
+      $(vendorSelect).append(vendorOption).trigger("change");
+    }
+    $(vendorSelect).select2({
+      ajax: {
+        url: BASE_URL + "scm/purchasing/purchase_order_plan/get_vendor_search",
+        type: "POST",
+        dataType: "json",
+        delay: 300,
+        data: function (params) {
+          return {
+            q: params.term || "",
+            page: params.page || 1,
+          };
+        },
+        processResults: function (data, params) {
+          params.page = params.page || 1;
+          return {
+            results: data.results || [],
+            pagination: data.pagination || { more: false },
+          };
+        },
+      },
+      placeholder: "-- Pilih Vendor --",
+      minimumInputLength: 0,
+    });
+
     // Set initial values
     itemSelect.value = data[i].ItemID;
-    vendorSelect.value = data[i].Vendor;
     colorSelect.value = data[i].ItemID;
 
     // Render year dropdown
     renderYearDropdown($yearSelect, shipmentDate);
 
-    // Kumpulkan untuk batch Select2 init
-    selectsToInit.push(vendorSelect, colorSelect);
+    // Kumpulkan untuk batch Select2 init (vendor punya select2 sendiri di atas)
+    selectsToInit.push(colorSelect);
     selectsToInit.push($yearSelect[0]);
 
     // Simpan referensi WW untuk lazy render nanti
@@ -4304,42 +4238,6 @@ function renderWWDropdownsBatch(wwSelectsToRender) {
 }
 
 // tutup fungsi renderTableTengahRows
-
-function updateAllSelectOptions() {
-  const $itemSelects = $(".itemSelectColumn");
-
-  if ($itemSelects.length === 0) {
-    // console.log(" Tidak ada item select di DOM");
-    return;
-  }
-
-  $itemSelects.each(function () {
-    const $select = $(this);
-    const currentValue = $select.val();
-
-    // Destroy select2 lama
-    if ($select.data("select2")) {
-      $select.select2("destroy");
-    }
-
-    // Update HTML dengan itemOptionsHTML terbaru
-    $select.html(itemOptionsHTML);
-
-    // Re-init select2
-    $select.select2({
-      placeholder: "-- Pilih Item --",
-      minimumResultsForSearch: 1,
-      width: "100%",
-    });
-
-    // Set value kembali
-    if (currentValue) {
-      $select.val(currentValue).trigger("change");
-    }
-  });
-
-  // console.log(" Semua item select berhasil diupdate dengan data terbaru");
-}
 
 let totalTableKiri = 0;
 let arrIDVendorTableKiri = [];
@@ -6739,16 +6637,11 @@ $(document).ready(function () {
     },
   );
 
-  // Event untuk vendor/batch changes - HANYA pada CHANGE
-  $(document).on(
-    "change",
-    ".BigDataTableTengah .vendorSelectColumn, .BigDataTableTengah .batchColumn",
-    function () {
-      // console.log("Vendor/Batch changed, triggering auto recalculate...");
-      clearTimeout(window.autoRecalcTimer);
-      autoRecalculateTableKiri();
-    },
-  );
+  // NOTE: vendorSelectColumn dan batchColumn sudah masing-masing punya
+  // handler recalculate sendiri (lihat handler "change" .vendorSelectColumn
+  // dan handler "blur" .batchColumn). Tidak perlu handler tambahan di sini -
+  // sebelumnya kedua trigger jalan bersamaan sehingga setiap kali batch/vendor
+  // diubah, autoRecalculateTableKiri() (yang berat) jalan dua kali.
 
   // Event untuk add/delete rows
   $(document).on(
@@ -8228,38 +8121,13 @@ function generateTableCalculasi(targetRowId) {
         payment: parseFloat(((percent / 100) * totalQty * avgPrice).toFixed(2)),
         itemDetail: `All Items (${relatedItems.length} items)`,
       });
-    } else if (formValue === 2) {
-      // PARTIAL: Hitung payment date per shipment item
-      relatedItems.forEach((item, idx) => {
-        const baseDate = getPaymentDateFromItem(item, alert);
-        const finalPaymentDate = applyTermDays(baseDate, termDays);
-
-        //  Fallback untuk itemCodeText: gunakan itemCode jika itemCodeText kosong
-        const displayItemCode =
-          item.itemCodeText ||
-          item.ItemCodeText ||
-          item.itemCode ||
-          item.ItemCode ||
-          "N/A";
-
-        resultRows.push({
-          paymentDate: finalPaymentDate,
-          alert,
-          alertName: getAlertName(alert),
-          notes: `${notes} (Shipment ${idx + 1}, ${displayItemCode})`,
-          fromValue: formValue,
-          fromValueName: "Partial",
-          percent,
-          termDays,
-          OACredit,
-          qty: item.qty,
-          payment: parseFloat(
-            ((percent / 100) * item.qty * item.price).toFixed(2),
-          ),
-          itemDetail: `${displayItemCode} | Ship: ${item.shipmentDate || "N/A"}`,
-        });
-      });
     } else {
+      // Partial (formValue === 2) dan form value lain dihitung per shipment
+      // item dengan cara yang sama, cuma labelnya beda - digabung supaya
+      // logikanya tidak dobel dan tidak bisa saling berbeda tanpa sengaja.
+      const fromValueName =
+        formValue === 2 ? "Partial" : `Form Value ${formValue}`;
+
       relatedItems.forEach((item, idx) => {
         const baseDate = getPaymentDateFromItem(item, alert);
         const finalPaymentDate = applyTermDays(baseDate, termDays);
@@ -8277,7 +8145,7 @@ function generateTableCalculasi(targetRowId) {
           alertName: getAlertName(alert),
           notes: `${notes} (Shipment ${idx + 1}, ${displayItemCode})`,
           fromValue: formValue,
-          fromValueName: `Form Value ${formValue}`,
+          fromValueName,
           percent,
           termDays,
           OACredit,
@@ -9851,14 +9719,8 @@ $(document).on("input", ".TermDaysColumn", function () {
 });
 
 function autoSavePaymentBeforeBatchChange(vendorId, oldBatch, newBatch) {
-  // Cari DTL ID untuk batch lama dengan vendor ini
-  const oldBatchKey =
-    oldBatch && oldBatch !== "0"
-      ? `${vendorId}-batch-${oldBatch}`
-      : `${vendorId}-date-*`;
-
-  // Cari di kumpulanDataTableKiriKanan untuk payment data yang ada
-  let groupWithOldBatch = kumpulanDataTableKiriKanan.find(
+  // Cari payment group untuk batch lama pada vendor ini
+  const groupWithOldBatch = kumpulanDataTableKiriKanan.find(
     (g) =>
       String(g.vendorId) === String(vendorId) &&
       (oldBatch && oldBatch !== "0"
@@ -9866,9 +9728,7 @@ function autoSavePaymentBeforeBatchChange(vendorId, oldBatch, newBatch) {
         : !g.batch || g.batch === "0" || g.batch === 0),
   );
 
-  if (!groupWithOldBatch) {
-    return; // Tidak ada payment data untuk batch lama, skip auto-save
-  }
+  if (!groupWithOldBatch) return; // tidak ada payment data untuk batch lama
 
   if (
     !groupWithOldBatch.paymentIds ||
@@ -9877,74 +9737,54 @@ function autoSavePaymentBeforeBatchChange(vendorId, oldBatch, newBatch) {
     return;
   }
 
-  // Ambil DTL ID untuk batch lama
-  let oldBatchDtlId = groupWithOldBatch.purchasePlanDtlId;
+  const oldBatchDtlId = groupWithOldBatch.purchasePlanDtlId;
   if (!oldBatchDtlId || oldBatchDtlId === 0) {
-    console.warn(` ⚠ No DTL ID found for old batch, cannot auto-save payment`);
+    console.warn(
+      "autoSavePaymentBeforeBatchChange: DTL ID batch lama tidak ditemukan, auto-save dibatalkan",
+    );
     return;
   }
 
-  // Build payment rows dari kumpulanDataTableKiriKanan
-  const paymentRowsToSave = [];
-  if (groupWithOldBatch.paymentIds && groupWithOldBatch.paymentIds.length > 0) {
-    for (let i = 0; i < groupWithOldBatch.paymentIds.length; i++) {
-      const row = {
-        PaymentID: groupWithOldBatch.paymentIds[i] || 0,
-        PurchasePlanDtlID: oldBatchDtlId, // PENTING: Gunakan DTL ID batch lama!
-        Notes: groupWithOldBatch.notes ? groupWithOldBatch.notes[i] : null,
-        Percent: groupWithOldBatch.percent
-          ? groupWithOldBatch.percent[i]
-          : null,
-        FromValue: groupWithOldBatch.formValue
-          ? groupWithOldBatch.formValue[i]
-          : null,
-        Alert: groupWithOldBatch.alert ? groupWithOldBatch.alert[i] : null,
-        Term: groupWithOldBatch.termDays ? groupWithOldBatch.termDays[i] : null,
-        OACredit: groupWithOldBatch.OACredit
-          ? groupWithOldBatch.OACredit[i]
-          : null,
-        PaymentDate: groupWithOldBatch.paymentDate
-          ? groupWithOldBatch.paymentDate[i]
-          : null,
-      };
-      paymentRowsToSave.push(row);
-    }
-  }
+  const paymentRowsToSave = groupWithOldBatch.paymentIds.map(
+    (paymentId, i) => ({
+      PaymentID: paymentId || 0,
+      PurchasePlanDtlID: oldBatchDtlId, // gunakan DTL ID batch lama, bukan yang baru
+      Notes: groupWithOldBatch.notes?.[i] ?? null,
+      Percent: groupWithOldBatch.percent?.[i] ?? null,
+      FromValue: groupWithOldBatch.formValue?.[i] ?? null,
+      Alert: groupWithOldBatch.alert?.[i] ?? null,
+      Term: groupWithOldBatch.termDays?.[i] ?? null,
+      OACredit: groupWithOldBatch.OACredit?.[i] ?? null,
+      PaymentDate: groupWithOldBatch.paymentDate?.[i] ?? null,
+    }),
+  );
 
-  if (paymentRowsToSave.length === 0) {
-    // console.log(` ℹ No payment rows to save, skipping`);
-    return;
-  }
+  if (paymentRowsToSave.length === 0) return;
 
-  // AJAX call untuk auto-save
   $.ajax({
     url: BASE_URL + "scm/purchasing/purchase_plan_report/updateTableKanan",
     type: "POST",
     data: JSON.stringify({
       payments: paymentRowsToSave,
-      mapping: {}, // Tidak ada mapping untuk auto-save
+      mapping: {},
       mappingShipment: {},
       purchasePlanID: dbtPurchasePlan_ID,
-      autoSave: true, // Flag untuk backend bahwa ini auto-save
-      isAutoSaveBeforeBatchChange: true, // Indica bahwa ini auto-save sebelum batch change
+      autoSave: true,
+      isAutoSaveBeforeBatchChange: true,
     }),
     contentType: "application/json; charset=utf-8",
     dataType: "json",
     success: function (response) {
-      if (response.status === "success") {
-        console.log(
-          ` ✓ AUTO-SAVE SUCCESS: Payment data untuk batch ${oldBatch} berhasil tersimpan dengan DTL ${oldBatchDtlId}`,
-        );
-      } else {
+      if (response.status !== "success") {
         console.warn(
-          ` ⚠ AUTO-SAVE failed:`,
+          "Auto-save payment sebelum ganti batch gagal:",
           response.message || "Unknown error",
         );
       }
     },
     error: function (xhr, status, error) {
       console.error(
-        ` ❌ AUTO-SAVE AJAX ERROR:`,
+        "Auto-save payment sebelum ganti batch error:",
         status,
         error,
         xhr.responseText,
@@ -10077,14 +9917,6 @@ $(document).on("click", ".remove-row-icon", function () {
   autoRecalculateTableKiri();
 });
 
-function renderVendorDropdown($select) {
-  let html = '<option value="">-- Pilih Vendor --</option>';
-  vendorData.forEach((vendor) => {
-    html += `<option value="${vendor.ID}">${vendor.coName}</option>`;
-  });
-  $select.html(html);
-}
-
 $(document).on("select2:open", function () {
   setTimeout(function () {
     document
@@ -10131,23 +9963,66 @@ function tambahRowTableTengah() {
   tbody.append(newRowHtml);
 
   const $lastRow = tbody.find("tr:last");
-  renderItemDropdown($lastRow.find(".itemSelectColumn"));
   renderYearDropdown($lastRow.find(".shipment-year-field"));
   renderWWDropdown($lastRow.find(".wwColumn"));
 
   const $itemSelect = $lastRow.find(".itemSelectColumn");
-  const $selectedOption = $itemSelect.find("option:selected");
+  const itemId = 0;
+  const itemCodeText = "";
 
-  const itemId = parseInt($itemSelect.val(), 10) || 0;
-  const itemCodeText = $selectedOption.data("code") || "";
-  $lastRow
-    .find(".itemSelectColumn")
-    .html(itemOptionsHTML)
-    .select2({ placeholder: "-- Pilih Item --" });
-  $lastRow
-    .find(".vendorSelectColumn")
-    .html(vendorOptionsHTML)
-    .select2({ placeholder: "-- Pilih Vendor --" });
+  $itemSelect.select2({
+    ajax: {
+      url: BASE_URL + "scm/purchasing/purchase_plan_report/get_item_list",
+      dataType: "json",
+      delay: 300,
+      data: function (params) {
+        return { search: params.term };
+      },
+      processResults: function (data) {
+        return {
+          results: data.map((item) => ({
+            id: item.id,
+            text: item.code + " - " + item.description,
+            itemunitid: item.itemunitid,
+            unitname: item.unitname,
+            code: item.code,
+          })),
+        };
+      },
+    },
+    templateSelection: function (data) {
+      if (data.element) {
+        $(data.element)
+          .attr("data-itemunitid", data.itemunitid)
+          .attr("data-unitname", data.unitname)
+          .attr("data-code", data.code);
+      }
+      return data.text;
+    },
+    placeholder: "-- Pilih Item --",
+    minimumInputLength: 1,
+  });
+
+  $lastRow.find(".vendorSelectColumn").select2({
+    ajax: {
+      url: BASE_URL + "scm/purchasing/purchase_order_plan/get_vendor_search",
+      type: "POST",
+      dataType: "json",
+      delay: 300,
+      data: function (params) {
+        return { q: params.term || "", page: params.page || 1 };
+      },
+      processResults: function (data, params) {
+        params.page = params.page || 1;
+        return {
+          results: data.results || [],
+          pagination: data.pagination || { more: false },
+        };
+      },
+    },
+    placeholder: "-- Pilih Vendor --",
+    minimumInputLength: 0,
+  });
 
   $lastRow
     .find(".colorColumn")
@@ -10350,19 +10225,42 @@ function duplicateLastRowNative() {
   const $itemSelect = $("<select>", {
     class: "form-control form-control-sm itemSelectColumn",
     style: "width: 200px;",
-  }).html(itemOptionsHTML || '<option value="">No items available</option>');
+  });
 
   $newRow.append($("<td class='item-code-col'></td>").append($itemSelect));
 
-  $itemSelect.select2({
-    placeholder: "-- Pilih Item --",
-    minimumResultsForSearch: 1,
-    width: "100%",
-  });
-
   if (lastRowData.itemCode) {
-    $itemSelect.val(String(lastRowData.itemCode)).trigger("change");
+    const itemLabel = [lastRowData.itemCodeText, lastRowData.unitName]
+      .filter(Boolean)
+      .join(" - ");
+    const itemOption = new Option(
+      itemLabel || String(lastRowData.itemCode),
+      lastRowData.itemCode,
+      true,
+      true,
+    );
+    $itemSelect.append(itemOption).trigger("change");
   }
+
+  $itemSelect.select2({
+    ajax: {
+      url: BASE_URL + "scm/purchasing/purchase_plan_report/get_item_list",
+      dataType: "json",
+      delay: 300,
+      data: (params) => ({ search: params.term }),
+      processResults: (data) => ({
+        results: data.map((item) => ({
+          id: item.id,
+          text: item.code + " - " + item.description,
+          itemunitid: item.itemunitid,
+          unitname: item.unitname,
+          code: item.code,
+        })),
+      }),
+    },
+    placeholder: "-- Pilih Item --",
+    minimumInputLength: 1,
+  });
 
   // Unit (readonly)
   $newRow.append(
@@ -10387,21 +10285,40 @@ function duplicateLastRowNative() {
   // Vendor select
   const $vendorSelect = $("<select>", {
     class: "form-control form-control-sm vendorSelectColumn",
-  }).html(
-    vendorOptionsHTML || '<option value="">No vendors available</option>',
-  );
+  });
 
   $newRow.append($("<td></td>").append($vendorSelect));
 
-  $vendorSelect.select2({
-    placeholder: "-- Pilih Vendor --",
-    minimumResultsForSearch: 1,
-    width: "100%",
-  });
-
   if (lastRowData.vendor) {
-    $vendorSelect.val(String(lastRowData.vendor)).trigger("change");
+    const vendorLabel =
+      arrVendor[lastRowData.vendor] || String(lastRowData.vendor);
+    const vendorOption = new Option(
+      vendorLabel,
+      lastRowData.vendor,
+      true,
+      true,
+    );
+    $vendorSelect.append(vendorOption).trigger("change");
   }
+
+  $vendorSelect.select2({
+    ajax: {
+      url: BASE_URL + "scm/purchasing/purchase_order_plan/get_vendor_search",
+      type: "POST",
+      dataType: "json",
+      delay: 300,
+      data: (params) => ({ q: params.term || "", page: params.page || 1 }),
+      processResults: (data, params) => {
+        params.page = params.page || 1;
+        return {
+          results: data.results || [],
+          pagination: data.pagination || { more: false },
+        };
+      },
+    },
+    placeholder: "-- Pilih Vendor --",
+    minimumInputLength: 0,
+  });
 
   // Color select
   const $colorSelect = $("<select>", {

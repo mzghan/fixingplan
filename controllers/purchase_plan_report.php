@@ -1146,11 +1146,13 @@ public function get_all_payment_calc()
 
         $result = $this->db->get()->result_array();
 
-        // Group by groupKey
+        // Group by groupKey (dibentuk manual, kolom ini tidak ada di hasil SELECT)
         $grouped = [];
         foreach ($result as $row) {
-            $key = $row['groupKey'];
-            
+            $key = !empty($row['PurchasePlanDtlID'])
+                ? 'dtl-' . $row['PurchasePlanDtlID']
+                : $row['VendorID'] . '-batch-' . $row['Batch'];
+
             if (!isset($grouped[$key])) {
                 $grouped[$key] = [];
             }
