@@ -2478,6 +2478,80 @@ $(document).ready(function () {
           dataBaruTableKanan.push(rowData);
         });
 
+        // PENTING: sampai sini dataBaruTableKanan cuma berisi batch yang
+        // SEDANG TAMPIL di #tableKanan. Kalau user sempat pindah-pindah
+        // batch (via view-summary-details-btn) tanpa Save di antaranya,
+        // batch-batch lain yang sudah diisi tersimpan di memory
+        // (kumpulanDataTableKiriKanan) tapi tidak pernah ikut terkirim.
+        // Gabungkan di sini supaya semua batch yang pernah diisi ikut
+        // ke-save, bukan cuma yang terakhir dibuka.
+        const dtlIdsAlreadySent = new Set(
+          dataBaruTableKanan
+            .map((r) => r.PurchasePlanDtlID)
+            .filter((id) => id !== null && id !== undefined && id !== 0),
+        );
+        const tempRowIdsAlreadySent = new Set(
+          dataBaruTableKanan.map((r) => r.tempRowId).filter(Boolean),
+        );
+
+        if (Array.isArray(kumpulanDataTableKiriKanan)) {
+          kumpulanDataTableKiriKanan.forEach((group) => {
+            const groupDtlId =
+              group.purchasePlanDtlID || group.purchasePlanDtlId || null;
+            const groupTempRowId = group.tempRowId || null;
+
+            // Lewati kalau grup ini yang sedang tampil di DOM (sudah masuk di atas)
+            if (groupDtlId && dtlIdsAlreadySent.has(Number(groupDtlId))) return;
+            if (
+              !groupDtlId &&
+              groupTempRowId &&
+              tempRowIdsAlreadySent.has(groupTempRowId)
+            )
+              return;
+
+            const baseInfo = {
+              PurchasePlanDtlID: groupDtlId,
+              tempRowId: groupTempRowId,
+              shipmentDate: group.shipmentDate || null,
+              vendorId: group.vendorId || group.vendor || null,
+              batch: group.batch || null,
+            };
+
+            if (Array.isArray(group.payments) && group.payments.length > 0) {
+              // Format baru: array object payments
+              group.payments.forEach((p) => {
+                dataBaruTableKanan.push({
+                  ...baseInfo,
+                  PaymentID: Number(p.PaymentID) || 0,
+                  Notes: p.Notes ?? null,
+                  Percent: p.Percent ?? null,
+                  FromValue: p.FromValue ?? null,
+                  Alert: p.Alert ?? null,
+                  Term: p.Term ?? null,
+                  OACredit: p.OACredit ?? null,
+                });
+              });
+            } else if (
+              Array.isArray(group.paymentIds) &&
+              group.paymentIds.length > 0
+            ) {
+              // Format lama: parallel arrays (paymentIds, termDays, percent, dst)
+              group.paymentIds.forEach((paymentId, idx) => {
+                dataBaruTableKanan.push({
+                  ...baseInfo,
+                  PaymentID: Number(paymentId) || 0,
+                  Notes: group.notes?.[idx] ?? null,
+                  Percent: group.percent?.[idx] ?? null,
+                  FromValue: group.formValue?.[idx] ?? null,
+                  Alert: group.alert?.[idx] ?? null,
+                  Term: group.termDays?.[idx] ?? null,
+                  OACredit: group.OACredit?.[idx] ?? null,
+                });
+              });
+            }
+          });
+        }
+
         $.ajax({
           url:
             BASE_URL + "scm/purchasing/purchase_plan_report/updateTableKanan",
@@ -5703,21 +5777,26 @@ $(document).on("click", ".view-summary-details-btn", function () {
     currentLoadedVendorBatch !== null &&
     currentLoadedVendorBatch !== newVendorBatch;
 
-  //  JIKA ADA PERUBAHAN DAN USER INGIN GANTI, TAMPILKAN ALERT
-  if (hasUnsavedChanges && isDifferentSelection) {
-    const confirmMessage =
-      "Are you sure you want to load a different payment?\n\n" +
-      "Please save your current payment changes first.\n" +
-      "If you switch to another vendor or batch without saving,\n" +
-      "your unsaved changes will be lost.";
-
-    if (!confirm(confirmMessage)) {
-      // console.log(" User cancelled - staying on current data");
-      return;
-    } else {
-      // console.log(" User confirmed - discarding unsaved changes");
-      resetChangeTracking();
-    }
+  // Sebelumnya di sini user diminta konfirmasi "perubahan akan hilang" lalu
+  // datanya benar-benar dibuang (resetChangeTracking tanpa commit apapun).
+  // Sekarang: sebelum pindah ke vendor/batch lain, commit dulu semua baris
+  // payment yang sedang tampil ke kumpulanDataTableKiriKanan (memory), jadi
+  // tidak ada yang hilang dan bisa bolak-balik ganti batch. Data ini ikut
+  // dikirim saat tombol Save ditekan (lihat saveTableKanan).
+  if (isDifferentSelection) {
+    $("#tableKanan tr")
+      .not(":has(th)")
+      .each(function () {
+        const $row = $(this);
+        const hasData =
+          $row.find(".percenTableKanan").val() ||
+          $row.find(".notesTableKanan").val() ||
+          $row.find(".termDaysTableKanan").val();
+        if (hasData) {
+          commitPaymentChangesFromRow($row);
+        }
+      });
+    resetChangeTracking();
   }
 
   //  UPDATE CURRENT SELECTION & tempRowId
