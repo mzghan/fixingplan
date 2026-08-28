@@ -735,10 +735,44 @@ function commitPaymentChanges(updatedRow) {
   }
 
   if (existing.paymentIds && Array.isArray(existing.paymentIds)) {
-    const paymentIdx = existing.paymentIds.indexOf(updatedRow.PaymentID);
+    if (!Array.isArray(existing.tempPaymentIds)) {
+      // Array paralel baru untuk menyimpan identitas unik per baris
+      // (dibuat kalau group ini belum pernah punya tempPaymentIds -
+      // isi awal null supaya index-nya tetap sejajar dengan array lain).
+      existing.tempPaymentIds = existing.paymentIds.map(() => null);
+    }
+
+    let paymentIdx = -1;
+
+    //  Coba cocokkan lewat tempPaymentId dulu (identitas unik per baris,
+    // lihat data-temp-payment-id). Ini WAJIB dicoba duluan, karena kalau
+    // langsung indexOf(PaymentID) dan ada lebih dari satu baris yang
+    // sama-sama belum punya PaymentID asli (mis. hasil Duplicate Payment,
+    // yang semuanya di-set null/0), semua baris itu akan dianggap
+    // "baris yang sama" - baris terakhir yang di-commit akan menimpa
+    // baris lain di index yang sama alih-alih menambah/update index-nya
+    // sendiri, sehingga baris-baris sebelumnya hilang/ketuker saat user
+    // pindah-pindah batch.
+    if (updatedRow.tempPaymentId) {
+      paymentIdx = existing.tempPaymentIds.indexOf(updatedRow.tempPaymentId);
+    }
+
+    // Fallback ke PaymentID asli HANYA untuk baris yang memang sudah
+    // pernah tersimpan di server (PaymentID > 0) dan tidak/tidak perlu
+    // punya tempPaymentId.
+    if (
+      paymentIdx === -1 &&
+      updatedRow.PaymentID &&
+      Number(updatedRow.PaymentID) > 0
+    ) {
+      paymentIdx = existing.paymentIds.indexOf(Number(updatedRow.PaymentID));
+    }
 
     if (paymentIdx !== -1) {
       // Update arrays berdasarkan index
+      if (updatedRow.tempPaymentId) {
+        existing.tempPaymentIds[paymentIdx] = updatedRow.tempPaymentId;
+      }
       if (updatedRow.Term !== null && updatedRow.Term !== undefined) {
         if (!Array.isArray(existing.termDays)) existing.termDays = [];
         existing.termDays[paymentIdx] = updatedRow.Term;
@@ -773,6 +807,7 @@ function commitPaymentChanges(updatedRow) {
 
       // Pastikan semua array sudah initialized
       if (!Array.isArray(existing.paymentIds)) existing.paymentIds = [];
+      if (!Array.isArray(existing.tempPaymentIds)) existing.tempPaymentIds = [];
       if (!Array.isArray(existing.termDays)) existing.termDays = [];
       if (!Array.isArray(existing.percent)) existing.percent = [];
       if (!Array.isArray(existing.notes)) existing.notes = [];
@@ -783,6 +818,7 @@ function commitPaymentChanges(updatedRow) {
 
       // Append ke arrays
       existing.paymentIds.push(updatedRow.PaymentID);
+      existing.tempPaymentIds.push(updatedRow.tempPaymentId || null);
       existing.termDays.push(
         updatedRow.Term !== null && updatedRow.Term !== undefined
           ? updatedRow.Term
@@ -6477,20 +6513,89 @@ $(document).on("click", ".view-summary-details-btn", function () {
   });
 });
 
+//  PERBAIKAN: commitPaymentChanges() menyimpan data payment dalam DUA
+// format berbeda tergantung apakah group tersebut baru pertama kali
+// dibuat (belum pernah di-save) atau sudah pernah punya struktur
+// array lama:
+//   - Format LAMA: array terpisah (paymentIds/percent/notes/dst),
+//     dipakai kalau group.paymentIds sudah ada sebagai array.
+//   - Format BARU: group.payments = [{PaymentID, Percent, Notes, ...}],
+//     dipakai kalau group BARU dibuat (mis. batch yang belum di-save
+//     sama sekali) - lihat cabang `else` di commitPaymentChanges().
+// Duplicate Payment sebelumnya HANYA mengecek/membaca group.paymentIds,
+// jadi payment yang baru diisi di batch lain (dan masih format BARU
+// karena belum sempat di-save) selalu dianggap "tidak ada data" walau
+// sebenarnya sudah ada di group.payments. Helper ini menyamakan kedua
+// format supaya Duplicate Payment bisa membaca payment yang belum
+// di-save sekalipun.
+function getNormalizedPaymentArrays(group) {
+  if (!group) return null;
+
+  if (Array.isArray(group.paymentIds) && group.paymentIds.length > 0) {
+    return {
+      paymentIds: group.paymentIds,
+      paymentDate: Array.isArray(group.paymentDate) ? group.paymentDate : [],
+      termDays: Array.isArray(group.termDays) ? group.termDays : [],
+      percent: Array.isArray(group.percent) ? group.percent : [],
+      notes: Array.isArray(group.notes) ? group.notes : [],
+      formValue: Array.isArray(group.formValue) ? group.formValue : [],
+      alert: Array.isArray(group.alert) ? group.alert : [],
+      OACredit: Array.isArray(group.OACredit) ? group.OACredit : [],
+    };
+  }
+
+  if (Array.isArray(group.payments) && group.payments.length > 0) {
+    const validPayments = group.payments.filter(
+      (p) => p && typeof p === "object",
+    );
+    return {
+      paymentIds: validPayments.map((p) => p.PaymentID || null),
+      paymentDate: validPayments.map((p) => p.PaymentDate || null),
+      termDays: validPayments.map((p) => p.Term || null),
+      percent: validPayments.map((p) => p.Percent || null),
+      notes: validPayments.map((p) => p.Notes || ""),
+      formValue: validPayments.map((p) => p.FromValue || ""),
+      alert: validPayments.map((p) => p.Alert || ""),
+      OACredit: validPayments.map((p) => p.OACredit || ""),
+    };
+  }
+
+  return null;
+}
+
+//  Cek apakah sebuah group punya data payment, di format apapun
+// (array lama ATAU payments[] baru yang belum di-save).
+function groupHasPaymentData(group) {
+  if (!group) return false;
+  if (Array.isArray(group.paymentIds) && group.paymentIds.length > 0) {
+    return true;
+  }
+  if (Array.isArray(group.payments)) {
+    return group.payments.some((p) => p && typeof p === "object");
+  }
+  return false;
+}
+
 $(document).off("click", "#duplicatePayment");
 $(document).on("click", "#duplicatePayment", function () {
-  //  CARI SOURCE DATA dari preloadedPaymentGroups ATAU fallback ke kumpulanDataTableKiriKanan
-  let sourcesData = window.preloadedPaymentGroups || [];
+  //  CARI SOURCE DATA dari kumpulanDataTableKiriKanan (superset, berisi
+  // semua group dari preloadedPaymentGroups PLUS group baru yang belum
+  // di-save/dikirim ke server - lihat commitPaymentChanges()). Sebelumnya
+  // urutan ini terbalik (preloadedPaymentGroups dicoba duluan, baru
+  // fallback ke kumpulanDataTableKiriKanan kalau preloadedPaymentGroups
+  // kosong). Karena preloadedPaymentGroups isinya data payment yang SUDAH
+  // tersimpan di server dari vendor manapun, begitu ada satu saja vendor
+  // lain yang sudah punya payment tersimpan, array itu jadi tidak kosong
+  // dan fallback tidak pernah kepakai - akibatnya payment yang baru saja
+  // diisi user (belum di-save) untuk vendor yang sedang aktif tidak
+  // pernah ikut dicari sebagai source, walau datanya sebenarnya sudah
+  // ada di kumpulanDataTableKiriKanan.
+  let sourcesData = window.kumpulanDataTableKiriKanan || [];
 
-  // console.log(" Cari source dari preloadedPaymentGroups:", sourcesData);
-
-  //  FALLBACK: Jika preloadedPaymentGroups kosong, gunakan kumpulanDataTableKiriKanan
+  //  FALLBACK: kalau kumpulanDataTableKiriKanan kosong (mis. skenario
+  // lama/edge case), coba preloadedPaymentGroups sebagai cadangan.
   if (!Array.isArray(sourcesData) || sourcesData.length === 0) {
-    sourcesData = window.kumpulanDataTableKiriKanan || [];
-    // console.log(
-    //   "   preloadedPaymentGroups kosong, fallback ke kumpulanDataTableKiriKanan:",
-    //   sourcesData,
-    // );
+    sourcesData = window.preloadedPaymentGroups || [];
   }
 
   // Filter: vendor sama + punya payment + bukan batch aktif
@@ -6502,7 +6607,7 @@ $(document).on("click", "#duplicatePayment", function () {
     const isCurrentBatch =
       String(group.vendorId) === String(lastSelectedVendorId) &&
       String(group.batch) === String(window.currentBatch);
-    const hasPay = group.paymentIds && group.paymentIds.length > 0;
+    const hasPay = groupHasPaymentData(group);
 
     // console.log(
     //   `  [${i}] vendor=${group.vendorId}, batch=${group.batch}, isSame=${isSameVendor}, hasPay=${hasPay}, isCurrent=${isCurrentBatch}`,
@@ -6524,13 +6629,42 @@ $(document).on("click", "#duplicatePayment", function () {
   }
 
   const targetDtlId = currentDtlRealId;
+  const targetTempRowId = currentDtlTempRowId;
 
-  let targetGroup = window.kumpulanDataTableKiriKanan.find(
-    (g) => String(g.purchasePlanDtlId) === String(targetDtlId),
-  );
+  let targetGroup = null;
+
+  if (targetDtlId && Number(targetDtlId) > 0) {
+    // Batch/plan ini SUDAH punya DtlID asli dari server - identitas paling
+    // valid adalah DtlID itu sendiri.
+    targetGroup = window.kumpulanDataTableKiriKanan.find((g) => {
+      const gDtlId = g.purchasePlanDtlId || g.purchasePlanDtlID;
+      return gDtlId && String(gDtlId) === String(targetDtlId);
+    });
+  } else if (targetTempRowId) {
+    // Batch/plan ini BELUM disave (tidak ada DtlID sama sekali). JANGAN
+    // cocokkan lewat purchasePlanDtlId di sini - grup lain yang juga
+    // belum disave sama-sama punya purchasePlanDtlId null/undefined,
+    // jadi perbandingan berbasis DtlID akan salah nemu grup plan/batch
+    // LAIN yang kebetulan sama-sama belum punya ID (lihat catatan bug di
+    // atas). tempRowId unik per plan/baris, jadi itu satu-satunya
+    // identitas yang aman dipakai di sini - juga pastikan grup yang
+    // ditemukan memang belum punya DtlID (biar tidak salah nimpa grup
+    // yang sudah tersimpan di server tapi kebetulan tempRowId-nya sama
+    // persis karena alasan lain).
+    targetGroup = window.kumpulanDataTableKiriKanan.find((g) => {
+      const gDtlId = g.purchasePlanDtlId || g.purchasePlanDtlID;
+      return (
+        !gDtlId &&
+        g.tempRowId &&
+        String(g.tempRowId) === String(targetTempRowId)
+      );
+    });
+  }
 
   if (!targetGroup) {
-    const newGroupKey = `vendor-${lastSelectedVendorId}-batch-${currentBatch}-dtl-${targetDtlId}`;
+    const newGroupKey = targetTempRowId
+      ? `vendor-${lastSelectedVendorId}-batch-${currentBatch}-temp-${targetTempRowId}`
+      : `vendor-${lastSelectedVendorId}-batch-${currentBatch}-dtl-${targetDtlId}`;
 
     targetGroup = {
       groupKey: newGroupKey,
@@ -6562,20 +6696,42 @@ $(document).on("click", "#duplicatePayment", function () {
     window.kumpulanDataTableKiriKanan.push(targetGroup);
   }
 
-  targetGroup.paymentIds = sourceGroup.paymentIds.map(() => null); // 🔑 RESET ID
-  targetGroup.paymentDate = [...sourceGroup.paymentDate];
-  targetGroup.termDays = [...sourceGroup.termDays];
-  targetGroup.percent = [...sourceGroup.percent];
-  targetGroup.notes = [...sourceGroup.notes];
-  targetGroup.formValue = [...sourceGroup.formValue];
-  targetGroup.alert = [...sourceGroup.alert];
-  targetGroup.OACredit = [...sourceGroup.OACredit];
+  const sourceArrays = getNormalizedPaymentArrays(sourceGroup);
+
+  if (!sourceArrays) {
+    // Seharusnya tidak pernah kejadian karena sourceGroup sudah lolos
+    // groupHasPaymentData() di atas, tapi dijaga untuk keamanan.
+    alert(
+      " No payment data available to copy from.\n\nPlease create payment for at least one other batch of the same vendor first.",
+    );
+    return;
+  }
+
+  targetGroup.paymentIds = sourceArrays.paymentIds.map(() => null); // 🔑 RESET ID
+  //  Beri setiap baris hasil duplicate identitas unik sendiri
+  // (tempPaymentId), SELAIN reset PaymentID di atas. Tanpa ini, kalau
+  // sourceGroup punya lebih dari 1 baris payment, semua baris hasil
+  // duplicate sama-sama punya PaymentID null - begitu user pindah
+  // batch (yang men-trigger commit dari DOM ke cache), commitPaymentChanges
+  // tidak bisa membedakan baris mana row mana (lihat fix tempPaymentId di
+  // commitPaymentChanges) dan baris-baris itu akan saling menimpa/hilang.
+  targetGroup.tempPaymentIds = targetGroup.paymentIds.map(
+    () => `temp-pay-${Date.now()}-${Math.floor(Math.random() * 100000)}`,
+  );
+  targetGroup.paymentDate = [...sourceArrays.paymentDate];
+  targetGroup.termDays = [...sourceArrays.termDays];
+  targetGroup.percent = [...sourceArrays.percent];
+  targetGroup.notes = [...sourceArrays.notes];
+  targetGroup.formValue = [...sourceArrays.formValue];
+  targetGroup.alert = [...sourceArrays.alert];
+  targetGroup.OACredit = [...sourceArrays.OACredit];
 
   const paymentDataForRender = [];
   if (targetGroup.paymentIds && Array.isArray(targetGroup.paymentIds)) {
     for (let i = 0; i < targetGroup.paymentIds.length; i++) {
       const paymentRow = {
         PaymentID: targetGroup.paymentIds[i] || null,
+        tempPaymentId: targetGroup.tempPaymentIds[i], // ⬅️ identitas unik per baris
         PurchasePlanDtlID: targetGroup.purchasePlanDtlId,
         PaymentDate: targetGroup.paymentDate[i] || null,
         Term: targetGroup.termDays[i] || null,
@@ -7124,6 +7280,9 @@ function loadTableKanan(
           for (let i = 0; i < localData.paymentIds.length; i++) {
             finalData.push({
               PaymentID: localData.paymentIds[i],
+              tempPaymentId: localData.tempPaymentIds
+                ? localData.tempPaymentIds[i]
+                : null,
               PurchasePlanDtlID: parseInt(purchasePlanDtlID),
               ShipmentID: localData.shipmentIds
                 ? localData.shipmentIds[0]
@@ -7209,6 +7368,9 @@ function loadTableKanan(
         for (let i = 0; i < localData.paymentIds.length; i++) {
           finalData.push({
             PaymentID: localData.paymentIds[i],
+            tempPaymentId: localData.tempPaymentIds
+              ? localData.tempPaymentIds[i]
+              : null,
             PurchasePlanDtlID: purchasePlanDtlID || null,
             ShipmentID: localData.shipmentIds ? localData.shipmentIds[0] : null,
             PaymentDate: localData.paymentDate
