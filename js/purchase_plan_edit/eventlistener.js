@@ -3603,9 +3603,20 @@ function preloadAllPaymentData() {
                 purchasePlanDtlID: dtlId,
               });
 
+              // PENTING: rowId harus pakai format yang SAMA dengan uniqueRowId
+              // yang dipakai tombol "View Details" (dtl-{vendorId}-{batch}
+              // atau dtl-{vendorId}-{shipmentDate}), bukan dtl-{dtlId}.
+              // Kalau beda format, refreshObjectTableKiri gagal nemuin row
+              // ini pas user ngetik payment (rowId lookup mismatch), jadi
+              // update total di tabel kiri gagal walau groupKey-nya sama.
+              const preloadRowId =
+                rowInfo.batch && rowInfo.batch !== "0"
+                  ? `dtl-${rowInfo.vendorId}-${rowInfo.batch}`
+                  : `dtl-${rowInfo.vendorId}-${rowInfo.shipmentDate}`;
+
               groupObject = {
                 groupKey: groupKey,
-                rowId: `dtl-${dtlId}`,
+                rowId: preloadRowId,
                 tempRowId: `real-${dtlId}`,
                 vendorId: Number(rowInfo.vendorId),
                 vendorName: vendorDisplayName,
@@ -6113,12 +6124,15 @@ $(document).on("click", ".view-summary-details-btn", function () {
         );
 
         if (!focusedObject) {
-          if (Array.isArray(window.kumpulanDataTableKiriKanan)) {
-            console.log(
-              " Clearing kumpulanDataTableKiriKanan before adding new batch",
-            );
-            window.kumpulanDataTableKiriKanan.length = 0;
-          } else {
+          // PENTING: JANGAN kosongkan seluruh kumpulanDataTableKiriKanan di
+          // sini. Ini sama seperti bug yang sudah diperbaiki di cabang
+          // "validData.length === 0" di atas - kalau plan yang SEDANG
+          // dibuka belum pernah di-cache di sesi ini (baru pertama kali
+          // load payment-nya), itu bukan berarti plan-plan LAIN yang sudah
+          // diisi user (belum di-Save) boleh ikut hilang. Cukup pastikan
+          // array-nya ada, lalu di bawah kita push object baru untuk plan
+          // ini tanpa menyentuh entry plan lain.
+          if (!Array.isArray(window.kumpulanDataTableKiriKanan)) {
             window.kumpulanDataTableKiriKanan = [];
           }
           //  Dapatkan total dari aggregatedSummary
@@ -6619,6 +6633,22 @@ function refreshObjectTableKiri(targetRowId) {
   let targetObject = kumpulanDataTableKiriKanan.find(
     (r) => String(r.rowId) === String(effectiveRowId),
   );
+
+  // Fallback: kalau rowId tidak match (mis. beda sumber pembuatan object),
+  // coba cocokkan lewat groupKey berdasarkan vendor+batch/shipmentDate yang
+  // sedang aktif, supaya update tetap kena row yang benar dan tidak
+  // silently gagal.
+  if (!targetObject && window.currentBatch !== undefined) {
+    const fallbackGroupKey = generateShipmentGroupKey({
+      vendorId: lastSelectedVendorId,
+      batch: window.currentBatch,
+      shipmentDate: window.currentShipmentDate,
+      purchasePlanDtlId: window.currentDtlRealID,
+    });
+    targetObject = kumpulanDataTableKiriKanan.find(
+      (r) => r.groupKey === fallbackGroupKey,
+    );
+  }
 
   if (!targetObject) {
     console.warn(` rowId ${effectiveRowId} tidak ditemukan`);
