@@ -834,14 +834,47 @@ function commitPaymentChanges(updatedRow) {
             p.temp_payment_id === updatedRow.tempPaymentId),
       );
     } else {
-      // fallback: cari berdasarkan kombinasi tempRowId + paymentDate + Notes (kurang ideal tapi aman)
-      idx = existing.payments.findIndex(
-        (p) =>
-          p &&
-          p.tempRowId === updatedRow.tempRowId &&
-          (p.PaymentDate === updatedRow.PaymentDate ||
-            p.Notes === updatedRow.Notes),
-      );
+      // fallback: cari berdasarkan kombinasi tempRowId + paymentDate + Notes
+      // (kurang ideal, dipakai HANYA kalau tidak ada PaymentID/tempPaymentId
+      // sama sekali).
+      //
+      //  PERBAIKAN: sebelumnya fallback ini juga match kalau PaymentDate
+      // ATAU Notes sama-sama KOSONG di kedua sisi (mis. dua baris baru yang
+      // belum diisi tanggal/catatan). Karena semua baris dalam satu plan
+      // berbagi tempRowId yang sama, itu artinya baris manapun yang masih
+      // kosong akan selalu match ke baris PERTAMA yang ditemukan - baris
+      // lain jadi ikut menimpa index yang sama alih-alih menambah entry
+      // baru, sehingga baris sebelumnya "hilang". Sekarang match hanya
+      // dianggap valid kalau PaymentDate ATAU Notes memang terisi (bukan
+      // kosong) di kedua sisi; kalau semuanya kosong maka dianggap baris
+      // yang belum bisa dipastikan identitasnya dan diperlakukan sebagai
+      // baris baru (push), bukan menimpa baris lain secara sembarangan.
+      const hasComparableDate =
+        updatedRow.PaymentDate !== null &&
+        updatedRow.PaymentDate !== undefined &&
+        updatedRow.PaymentDate !== "";
+      const hasComparableNotes =
+        updatedRow.Notes !== null &&
+        updatedRow.Notes !== undefined &&
+        updatedRow.Notes !== "";
+
+      if (hasComparableDate || hasComparableNotes) {
+        idx = existing.payments.findIndex(
+          (p) =>
+            p &&
+            p.tempRowId === updatedRow.tempRowId &&
+            ((hasComparableDate &&
+              p.PaymentDate === updatedRow.PaymentDate &&
+              p.PaymentDate !== null &&
+              p.PaymentDate !== undefined &&
+              p.PaymentDate !== "") ||
+              (hasComparableNotes &&
+                p.Notes === updatedRow.Notes &&
+                p.Notes !== null &&
+                p.Notes !== undefined &&
+                p.Notes !== "")),
+        );
+      }
     }
 
     if (idx !== -1) {
@@ -5772,18 +5805,46 @@ function autoRecalculateTableKiri() {
   });
 
   //  FIX: Sekarang build newKey yang final berdasarkan PurchasePlanDtlID jika ada
+  //
+  //  PERBAIKAN (bug: "plan 2 tiba-tiba menampilkan data plan 1"): _finalKey
+  //  di sini dulunya dihitung TANPA memperhitungkan duplikat vendor+batch/
+  //  shipmentDate yang identik (mis. 2+ plan yang sama-sama belum diisi
+  //  batch/shipmentDate, sehingga sama-sama jatuh ke key kosong yang sama).
+  //  Karena rebuildTableKiri() SELALU memprioritaskan _finalKey kalau sudah
+  //  ada (lihat `if (dataRow._finalKey) { key = dataRow._finalKey; }`),
+  //  mekanisme anti-tabrakan `dupN` yang sudah dibuat di rebuildTableKiri
+  //  jadi tidak pernah jalan untuk data yang lewat sini - akibatnya beberapa
+  //  plan berbeda dianggap satu row yang sama (tempRowId sama), dan payment
+  //  yang diisi di satu plan "bocor"/menimpa ke plan lain saat pindah-pindah.
+  //  Sekarang hitung dupIndex dengan cara yang SAMA PERSIS seperti di
+  //  rebuildTableKiri (urutan kemunculan per kombinasi vendor+batch/
+  //  shipmentDate dalam array yang sama), supaya _finalKey yang dihasilkan
+  //  di sini selalu konsisten/unik dengan apa yang akan dihitung ulang oleh
+  //  rebuildTableKiri - dua plan yang identik datanya sekarang tetap dapat
+  //  identitas masing-masing (base key untuk kemunculan pertama, lalu
+  //  `-dup2`, `-dup3`, dst untuk kemunculan berikutnya).
+  const noDtlKeyCountsForFinalKey = {};
   const finalDataUntukTableKiri = dataUntukTableKiri.map((row) => {
     if (row.PurchasePlanDtlID && row.PurchasePlanDtlID > 0) {
       row._finalKey = `dtl-${row.PurchasePlanDtlID}`;
     } else {
+      const vendorVal = String(row.Vendor);
       const batchVal = row.Batch ? String(row.Batch).trim() : null;
       const shipmentVal = row.ShipmentDate
         ? String(row.ShipmentDate).trim()
         : null;
-      row._finalKey =
+
+      const baseKey =
         batchVal && batchVal !== "0"
           ? `${row.Vendor}-batch-${batchVal}`
           : `${row.Vendor}-date-${shipmentVal}`;
+
+      const dedupCountKey = `${vendorVal}::${batchVal || ""}::${shipmentVal || ""}`;
+      noDtlKeyCountsForFinalKey[dedupCountKey] =
+        (noDtlKeyCountsForFinalKey[dedupCountKey] || 0) + 1;
+      const dupIndex = noDtlKeyCountsForFinalKey[dedupCountKey];
+
+      row._finalKey = dupIndex > 1 ? `${baseKey}-dup${dupIndex}` : baseKey;
     }
     return row;
   });
@@ -7394,8 +7455,27 @@ function renderTableKanan(dataArray, focusedObject = null) {
       .attr("data-batch", batch || "")
       .attr("data-closed", isRowClosed ? "1" : "0");
 
+    //  PERBAIKAN (bug: baris pertama "hilang"/ketimpa baris lain setelah
+    //  bolak-balik pindah plan): row hasil cache (existing.payments, lihat
+    //  commitPaymentChanges) membawa tempPaymentId unik per baris, tapi
+    //  sebelumnya atribut ini tidak pernah ditulis balik ke <tr> saat
+    //  render ulang dari cache. Akibatnya saat user pindah plan lagi,
+    //  commitPaymentChangesFromRow() membaca data-temp-payment-id kosong
+    //  untuk SEMUA baris, sehingga commitPaymentChanges() gagal mencocokkan
+    //  lewat tempPaymentId dan jatuh ke fallback tempRowId+PaymentDate/Notes
+    //  yang sama-sama kosong untuk semua baris dalam plan yang sama -
+    //  akibatnya semua baris menimpa index array yang sama (baris terakhir
+    //  yang diproses "menang", baris lain hilang/ketuker). Sekarang
+    //  tempPaymentId (dan tempRowId per-baris kalau ada) diisi ulang dari
+    //  data row supaya identitas tiap baris tetap terjaga lintas render.
+    if (row.tempPaymentId || row.temp_payment_id) {
+      tr.attr("data-temp-payment-id", row.tempPaymentId || row.temp_payment_id);
+    }
+
     //   PERBAIKAN: Set tempRowId dari focusedObject untuk saveTableKanan bisa cari shipment info
-    if (focusedObject && focusedObject.tempRowId) {
+    if (row.tempRowId) {
+      tr.attr("data-temp-rowid", row.tempRowId);
+    } else if (focusedObject && focusedObject.tempRowId) {
       tr.attr("data-temp-rowid", focusedObject.tempRowId);
     }
 
