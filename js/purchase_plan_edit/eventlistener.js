@@ -6019,22 +6019,60 @@ $(document).on("click", ".view-summary-details-btn", function () {
         });
 
         if (validData.length === 0) {
-          // Bersihkan cache
-          if (Array.isArray(window.kumpulanDataTableKiriKanan)) {
-            window.kumpulanDataTableKiriKanan.length = 0;
+          // Sebelumnya di sini SELURUH kumpulanDataTableKiriKanan
+          // dikosongkan (window.kumpulanDataTableKiriKanan.length = 0).
+          // Ini bug besar: begitu server tidak punya data payment untuk
+          // plan yang SEDANG dibuka (wajar terjadi kalau plan itu belum
+          // pernah di-Save), SEMUA plan lain yang sudah diisi user di
+          // sesi ini ikut hilang juga. Cache plan lain harus tetap utuh -
+          // yang boleh "kosong" hanya tampilan untuk plan ini saja.
+          const groupKeyForThis = generateShipmentGroupKey({
+            vendorId: vendorId,
+            batch: batch,
+            shipmentDate: shipmentDate,
+            blanketPODateEst: blanketPODateEst,
+            purchasePlanDtlId: ID,
+          });
+
+          // Cek dulu: mungkin plan ini sendiri sebenarnya SUDAH punya data
+          // lokal (hasil edit yang belum di-save) di cache. Server bilang
+          // kosong bukan berarti benar-benar tidak ada isinya untuk user.
+          const localGroupForThis = Array.isArray(
+            window.kumpulanDataTableKiriKanan,
+          )
+            ? window.kumpulanDataTableKiriKanan.find((g) => {
+                const matchDtl =
+                  (g.purchasePlanDtlID &&
+                    String(g.purchasePlanDtlID) === String(ID)) ||
+                  (g.purchasePlanDtlId &&
+                    String(g.purchasePlanDtlId) === String(ID));
+                const matchVendor =
+                  String(g.vendorId) === String(requestedVendor);
+                const matchBatch =
+                  requestedBatch !== null && requestedBatch !== undefined
+                    ? String(g.batch) === String(requestedBatch)
+                    : true;
+                const hasData =
+                  (Array.isArray(g.paymentIds) && g.paymentIds.length > 0) ||
+                  (Array.isArray(g.payments) && g.payments.length > 0);
+                return matchDtl && matchVendor && matchBatch && hasData;
+              })
+            : null;
+
+          if (localGroupForThis) {
+            // Ada data lokal (belum di-save) untuk plan ini - render dari
+            // cache, JANGAN dianggap kosong dan JANGAN sentuh plan lain.
+            loadTableKanan(ID, [], localGroupForThis);
+            return;
           }
 
-          // Render tabel kosong
+          // Betul-betul belum ada data (di server maupun lokal) untuk
+          // plan ini saja - render tabel kosong TANPA menghapus cache
+          // plan lain.
           loadTableKanan(null, [], {
             vendorId: requestedVendor,
             batch: requestedBatch,
-            groupKey: generateShipmentGroupKey({
-              vendorId: vendorId,
-              batch: batch,
-              shipmentDate: shipmentDate,
-              blanketPODateEst: blanketPODateEst,
-              purchasePlanDtlId: ID,
-            }),
+            groupKey: groupKeyForThis,
           });
 
           resetChangeTracking();
@@ -6154,19 +6192,40 @@ $(document).on("click", ".view-summary-details-btn", function () {
           );
           focusedObject.closed = isGroupClosed ? 1 : 0;
 
-          // Update payment data jika ada perubahan dari server
-          focusedObject.paymentIds = response.data.map(
-            (r) => r.PaymentID || null,
-          );
-          focusedObject.paymentDate = response.data.map(
-            (r) => r.PaymentDate || null,
-          );
-          focusedObject.termDays = response.data.map((r) => r.Term || null);
-          focusedObject.percent = response.data.map((r) => r.Percent || null);
-          focusedObject.notes = response.data.map((r) => r.Notes || "");
-          focusedObject.formValue = response.data.map((r) => r.FromValue || "");
-          focusedObject.alert = response.data.map((r) => r.Alert || "");
-          focusedObject.OACredit = response.data.map((r) => r.OACredit || "");
+          // PENTING: focusedObject di sini adalah OBJECT YANG SAMA yang
+          // tersimpan di kumpulanDataTableKiriKanan. Kalau plan ini sudah
+          // pernah diisi/diubah user sebelumnya (lalu user pindah ke plan
+          // lain tanpa Save), array-nya (paymentIds/percent/notes/dst)
+          // berisi PERUBAHAN LOKAL yang belum ke-save ke database.
+          // response.data di titik ini masih data LAMA dari server (karena
+          // memang belum di-save), jadi kalau kita timpa array-nya di sini,
+          // perubahan lokal user akan hilang saat balik lagi ke plan ini.
+          // Fix: hanya isi dari server kalau cache-nya memang masih kosong
+          // (pertama kali plan ini dibuka), supaya data yang sudah diisi
+          // user tetap dipertahankan saat bolak-balik pindah plan.
+          const cacheSudahAdaData =
+            (Array.isArray(focusedObject.paymentIds) &&
+              focusedObject.paymentIds.length > 0) ||
+            (Array.isArray(focusedObject.payments) &&
+              focusedObject.payments.length > 0);
+
+          if (!cacheSudahAdaData) {
+            // Update payment data dari server (baru pertama kali dibuka)
+            focusedObject.paymentIds = response.data.map(
+              (r) => r.PaymentID || null,
+            );
+            focusedObject.paymentDate = response.data.map(
+              (r) => r.PaymentDate || null,
+            );
+            focusedObject.termDays = response.data.map((r) => r.Term || null);
+            focusedObject.percent = response.data.map((r) => r.Percent || null);
+            focusedObject.notes = response.data.map((r) => r.Notes || "");
+            focusedObject.formValue = response.data.map(
+              (r) => r.FromValue || "",
+            );
+            focusedObject.alert = response.data.map((r) => r.Alert || "");
+            focusedObject.OACredit = response.data.map((r) => r.OACredit || "");
+          }
         }
 
         //  CEK: Jika data kosong, otomatis add line baru
