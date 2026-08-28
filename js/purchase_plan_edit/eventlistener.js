@@ -684,19 +684,20 @@ function commitPaymentChanges(updatedRow) {
         Number(x.purchasePlanDtlID) === Number(updatedRow.purchasePlanDtlID)
       )
         return true;
-      if (
-        x.tempRowId &&
-        updatedRow.tempRowId &&
-        x.tempRowId === updatedRow.tempRowId &&
-        x.shipmentDate === updatedRow.shipmentDate
-      )
-        return true;
-      if (
-        x.groupKey &&
-        updatedRow.groupKey &&
-        x.groupKey === updatedRow.shipmentDate
-      )
-        return true;
+      // PERBAIKAN: kalau kedua sisi sama-sama punya tempRowId, itu adalah
+      // identitas yang PALING valid untuk row yang belum disave (lihat
+      // catatan dupN di rebuildTableKiri) - match atau tidak, JANGAN
+      // lanjut ke pengecekan groupKey di bawah. Sebelumnya, dua plan
+      // dengan vendor sama yang sama-sama belum punya batch/shipmentDate
+      // punya groupKey yang identik walau tempRowId-nya beda, dan
+      // pengecekan groupKey di bawah tetap match - jadi payment dua plan
+      // berbeda ketuker/nimpa satu sama lain saat pindah-pindah.
+      // Juga dihapus cabang lama `x.groupKey === updatedRow.shipmentDate`
+      // yang membandingkan groupKey dengan shipmentDate mentah (bug lama,
+      // dua field yang tidak sebanding, sisa copy-paste).
+      if (x.tempRowId && updatedRow.tempRowId) {
+        return x.tempRowId === updatedRow.tempRowId;
+      }
       if (
         x.groupKey &&
         updatedRow.groupKey &&
@@ -4646,6 +4647,21 @@ async function rebuildTableKiri(dataUntukTableKiri) {
 
   const fragment = document.createDocumentFragment();
 
+  // PERBAIKAN: sebelumnya key/tempRowId/rowId untuk plan yang BELUM
+  // punya batch & BELUM di-save (jadi belum ada DtlID) dibentuk murni
+  // dari vendor+batch/shipmentDate. Kalau ada 2+ plan untuk vendor yang
+  // sama yang sama-sama belum diisi batch/shipmentDate (atau kebetulan
+  // shipmentDate-nya sama), semua plan itu jatuh ke key yang IDENTIK -
+  // sehingga secara identitas dianggap 1 row yang sama. Akibatnya payment
+  // yang diisi di plan pertama "ketuker"/menimpa plan lain saat
+  // pindah-pindah. `noDtlKeyCounts` melacak urutan kemunculan tiap
+  // kombinasi vendor+batch/shipmentDate dalam render ini, dan menambahkan
+  // suffix `-dupN` mulai kemunculan kedua supaya tiap plan tetap punya
+  // identitas sendiri sampai batch/shipmentDate-nya benar-benar diisi &
+  // disave (kemunculan pertama TIDAK berubah formatnya, jadi tidak
+  // breaking untuk kasus normal/non-collision).
+  const noDtlKeyCounts = {};
+
   for (const dataRow of dataUntukTableKiri) {
     const vendorId = String(dataRow.Vendor);
     const batch = dataRow.Batch ? String(dataRow.Batch).trim() : null;
@@ -4658,16 +4674,22 @@ async function rebuildTableKiri(dataUntukTableKiri) {
     const total = dataRow.Total || 0;
 
     let key;
+    let dupIndex = 0; // 0 = kemunculan pertama, tidak perlu suffix
 
     if (dataRow._finalKey) {
       key = dataRow._finalKey;
     } else if (dataRow.PurchasePlanDtlID && dataRow.PurchasePlanDtlID > 0) {
       key = `dtl-${dataRow.PurchasePlanDtlID}`;
     } else {
-      key =
+      const dedupCountKey = `${vendorId}::${batch || ""}::${shipmentDate || ""}`;
+      noDtlKeyCounts[dedupCountKey] = (noDtlKeyCounts[dedupCountKey] || 0) + 1;
+      dupIndex = noDtlKeyCounts[dedupCountKey];
+
+      const baseKey =
         batch && batch !== "0"
           ? `${vendorId}-batch-${batch}`
           : `${vendorId}-date-${shipmentDate}`;
+      key = dupIndex > 1 ? `${baseKey}-dup${dupIndex}` : baseKey;
     }
     const displayBatch =
       batch && batch !== "0"
@@ -4876,6 +4898,11 @@ async function rebuildTableKiri(dataUntukTableKiri) {
         batch && batch !== "0"
           ? `new-${vendorId}-${batch}`
           : `new-${vendorId}-${shipmentDate}`;
+      // Ikutkan suffix dupN yang sama seperti "key" di atas, supaya
+      // data-rowid tetap konsisten/unik dengan data-temp-rowid.
+      if (dupIndex > 1) {
+        uniqueRowId += `-dup${dupIndex}`;
+      }
     }
 
     // console.log(
@@ -5805,15 +5832,23 @@ $(document).on("click", ".view-summary-details-btn", function () {
       window.kumpulanDataTableKiriKanan &&
       Array.isArray(window.kumpulanDataTableKiriKanan)
     ) {
-      // Cari berdasarkan vendor + batch
-      const foundGroup = window.kumpulanDataTableKiriKanan.find((g) => {
-        const matchVendor = String(g.vendorId) === String(vendorId);
-        const matchBatch =
-          batch && batch !== "0"
-            ? String(g.batch) === String(batch)
-            : String(g.shipmentDate) === String(shipmentDate);
-        return matchVendor && matchBatch && g.purchasePlanDtlId;
-      });
+      // Cari dulu berdasarkan tempRowId (identitas paling valid, unik per
+      // plan berkat dupN di rebuildTableKiri), baru fallback ke
+      // vendor+batch/shipmentDate kalau tempRowId tidak ada match.
+      const foundGroup =
+        (tempRowId &&
+          window.kumpulanDataTableKiriKanan.find(
+            (g) =>
+              g.tempRowId && g.tempRowId === tempRowId && g.purchasePlanDtlId,
+          )) ||
+        window.kumpulanDataTableKiriKanan.find((g) => {
+          const matchVendor = String(g.vendorId) === String(vendorId);
+          const matchBatch =
+            batch && batch !== "0"
+              ? String(g.batch) === String(batch)
+              : String(g.shipmentDate) === String(shipmentDate);
+          return matchVendor && matchBatch && g.purchasePlanDtlId;
+        });
 
       if (foundGroup && foundGroup.purchasePlanDtlId) {
         realDtlId = foundGroup.purchasePlanDtlId;
@@ -5873,10 +5908,18 @@ $(document).on("click", ".view-summary-details-btn", function () {
       .not(":has(th)")
       .each(function () {
         const $row = $(this);
+        // PERBAIKAN: sebelumnya hanya cek percen/notes/termDays. Kalau
+        // baris cuma diisi FromValue/Alert/OACredit saja, hasData jadi
+        // false, baris itu tidak ikut di-commit ke cache, dan hilang saat
+        // pindah ke plan/batch lain. Sekarang cek semua kolom yang bisa
+        // diisi user.
         const hasData =
           $row.find(".percenTableKanan").val() ||
           $row.find(".notesTableKanan").val() ||
-          $row.find(".termDaysTableKanan").val();
+          $row.find(".termDaysTableKanan").val() ||
+          $row.find(".formValueTableKanan").val() ||
+          $row.find(".alertTableKanan").val() ||
+          $row.find(".OACreditTableKanan").val();
         if (hasData) {
           commitPaymentChangesFromRow($row);
         }
@@ -5920,7 +5963,34 @@ $(document).on("click", ".view-summary-details-btn", function () {
     $("#judulTableKanan").text(displayTitle);
     $("#tableKananHead").css("visibility", "visible");
     $("#judulTableKanan").css("visibility", "visible");
-    $("#tableKanan").empty();
+
+    // PERBAIKAN: Sebelumnya di sini tabel kanan langsung di-empty() dan
+    // fungsi return, TANPA pernah mengecek kumpulanDataTableKiriKanan.
+    // Padahal untuk plan/batch yang belum disave ke server (makanya ID
+    // tidak ditemukan), payment yang sudah diisi user tersimpan di cache
+    // itu (lihat commitPaymentChangesFromRow di atas, dipanggil sebelum
+    // switch). Sekarang panggil loadTableKanan(null, [], focusedObject)
+    // supaya cache di-cek dulu (lihat cabang "batch baru tanpa DtlID" di
+    // loadTableKanan) sebelum benar-benar dianggap kosong.
+    const groupKeyForThis = generateShipmentGroupKey({
+      vendorId: vendorId,
+      batch: batch,
+      shipmentDate: shipmentDate,
+      blanketPODateEst: blanketPODateEst,
+    });
+
+    loadTableKanan(null, [], {
+      vendorId: Number(vendorId),
+      batch: batch && batch !== "0" ? Number(batch) : null,
+      shipmentDate: shipmentDate || null,
+      groupKey: groupKeyForThis,
+      // PENTING: tempRowId adalah identitas paling valid untuk plan yang
+      // belum disave (lihat dupN di rebuildTableKiri) - beda plan bisa
+      // punya vendor+batch/shipmentDate yang sama/kosong, tapi tempRowId
+      // selalu unik per plan. Wajib dikirim supaya loadTableKanan bisa
+      // membedakan antar plan dengan benar.
+      tempRowId: tempRowId || null,
+    });
 
     return;
   }
@@ -6945,6 +7015,7 @@ function loadTableKanan(
   const requestedVendor = focusedObject ? focusedObject.vendorId : null;
   const requestedBatch = focusedObject ? focusedObject.batch : null;
   const requestedGroupKey = focusedObject ? focusedObject.groupKey : null;
+  const requestedTempRowId = focusedObject ? focusedObject.tempRowId : null;
 
   let finalData = null;
 
@@ -7025,24 +7096,46 @@ function loadTableKanan(
     //   "  [CACHE] Mencari batch BARU (tanpa DtlID) dengan Vendor + Batch...",
     // );
 
-    const localData = window.kumpulanDataTableKiriKanan.find((x) => {
-      const noValidDtlId = !x.purchasePlanDtlID && !x.purchasePlanDtlId;
+    const hasCacheData = (x) =>
+      (Array.isArray(x.termDays) && x.termDays.length > 0) ||
+      (Array.isArray(x.payments) && x.payments.length > 0);
 
-      const matchVendor = requestedVendor
-        ? String(x.vendorId) === String(requestedVendor)
-        : false;
+    // PERBAIKAN: tempRowId adalah identitas paling valid untuk plan yang
+    // belum disave (unik per plan berkat dupN di rebuildTableKiri, lihat
+    // catatan di sana). Cari berdasarkan tempRowId dulu - ini juga
+    // memperbaiki kasus plan TANPA batch sama sekali, yang sebelumnya
+    // tidak pernah ketemu lewat pencarian vendor+batch di bawah karena
+    // matchBatch selalu false kalau requestedBatch null.
+    let localData = requestedTempRowId
+      ? window.kumpulanDataTableKiriKanan.find((x) => {
+          const noValidDtlId = !x.purchasePlanDtlID && !x.purchasePlanDtlId;
+          return (
+            noValidDtlId &&
+            x.tempRowId &&
+            x.tempRowId === requestedTempRowId &&
+            hasCacheData(x)
+          );
+        })
+      : null;
 
-      const matchBatch =
-        requestedBatch !== null && requestedBatch !== undefined
-          ? String(x.batch) === String(requestedBatch)
+    // Fallback lama (vendor + batch) untuk kompatibilitas kalau
+    // tempRowId tidak dikirim oleh caller.
+    if (!localData) {
+      localData = window.kumpulanDataTableKiriKanan.find((x) => {
+        const noValidDtlId = !x.purchasePlanDtlID && !x.purchasePlanDtlId;
+
+        const matchVendor = requestedVendor
+          ? String(x.vendorId) === String(requestedVendor)
           : false;
 
-      const hasData =
-        (Array.isArray(x.termDays) && x.termDays.length > 0) ||
-        (Array.isArray(x.payments) && x.payments.length > 0);
+        const matchBatch =
+          requestedBatch !== null && requestedBatch !== undefined
+            ? String(x.batch) === String(requestedBatch)
+            : false;
 
-      return noValidDtlId && matchVendor && matchBatch && hasData;
-    });
+        return noValidDtlId && matchVendor && matchBatch && hasCacheData(x);
+      });
+    }
 
     if (localData) {
       // console.log("  [CACHE] ✓ FOUND batch baru! Menggunakan local cache");
@@ -7071,6 +7164,16 @@ function loadTableKanan(
             Closed: localData.closed || 0,
           });
         }
+      } else if (Array.isArray(localData.payments)) {
+        // PERBAIKAN: group untuk plan/batch yang belum pernah disave ke
+        // server (belum punya DtlID) disimpan oleh commitPaymentChanges()
+        // dalam format BARU (array "payments", bukan termDays/paymentIds).
+        // Sebelumnya cabang ini tidak punya fallback ini sama sekali,
+        // jadi localData SUDAH ketemu tapi finalData tetap null dan
+        // tabel kanan dirender kosong - padahal datanya ada di cache.
+        finalData = localData.payments.filter(
+          (p) => p && typeof p === "object",
+        );
       }
     } else {
       // console.log("  [CACHE] ✗ NOT FOUND batch baru - akan cek SERVER data");
