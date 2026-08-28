@@ -463,24 +463,55 @@ function commitPaymentChangesFromRow($row) {
   const tempRowId =
     $row.attr("data-temp-rowid") || $row.data("temp-rowid") || null;
 
+  // Fallback ke konteks batch yang sedang aktif (window.currentBatch/
+  // currentShipmentDate/lastSelectedVendorId) kalau row tidak punya
+  // atribut ini sendiri (mis. baris lama sebelum fix "Add Line").
   const vendorId =
-    parseInt($row.attr("data-vendor-id")) || parseInt($row.data("vendor-id"));
+    parseInt($row.attr("data-vendor-id")) ||
+    parseInt($row.data("vendor-id")) ||
+    parseInt(lastSelectedVendorId) ||
+    null;
 
+  const rawBatch = $row.attr("data-batch") || $row.data("batch");
   const batch =
-    parseInt($row.attr("data-batch")) || parseInt($row.data("batch")) || 0;
+    rawBatch && rawBatch !== "0" && rawBatch !== ""
+      ? parseInt(rawBatch)
+      : window.currentBatch && window.currentBatch !== "0"
+        ? parseInt(window.currentBatch)
+        : 0;
 
-  const groupKey =
-    purchasePlanDtlID && batch
-      ? `dtl-${purchasePlanDtlID}-batch-${batch}`
-      : purchasePlanDtlID
-        ? `dtl-${purchasePlanDtlID}`
-        : null;
+  const shipmentDate =
+    $row.attr("data-shipment-date") ||
+    $row.data("shipment-date") ||
+    window.currentShipmentDate ||
+    null;
+
+  //  Pakai generator groupKey yang SAMA dengan yang dipakai di seluruh
+  // bagian lain file (preload, klik "View Details", dst), supaya object
+  // yang dibuat/di-update di sini selalu ketemu dan nyambung dengan yang
+  // sudah ada - bukan bikin object baru yang "nyasar".
+  const groupKey = generateShipmentGroupKey({
+    vendorId: vendorId,
+    batch: batch,
+    shipmentDate: shipmentDate,
+    purchasePlanDtlId: purchasePlanDtlID,
+  });
+
+  //  rowId juga disamakan formatnya dengan uniqueRowId (tombol View
+  // Details): dtl-{vendorId}-{batch|shipmentDate} kalau sudah punya DtlID,
+  // new-{vendorId}-{batch|shipmentDate} kalau belum.
+  const batchOrDate = batch && batch !== 0 ? batch : shipmentDate;
+  const rowId =
+    purchasePlanDtlID && purchasePlanDtlID > 0
+      ? `dtl-${vendorId}-${batchOrDate}`
+      : `new-${vendorId}-${batchOrDate}`;
 
   const updatedData = {
     groupKey,
-    rowId: `${vendorId}-batch-${batch}`,
+    rowId,
     vendorId,
     batch,
+    shipmentDate,
     PaymentID: paymentId,
     tempPaymentId: tempPaymentId,
     tempRowId: tempRowId,
@@ -685,7 +716,14 @@ function commitPaymentChanges(updatedRow) {
       `temp-${updatedRow.tempRowId}-${updatedRow.shipmentDate}`;
     existing = {
       groupKey: newGroupKey,
+      //  rowId WAJIB diisi supaya refreshObjectTableKiri() (yang mencari
+      // berdasarkan rowId) bisa menemukan object ini juga - sebelumnya
+      // field ini tidak pernah diisi di sini, jadi total di tabel kiri
+      // tidak pernah ter-refresh untuk baris baru/plan yang belum disave.
+      rowId: updatedRow.rowId || newGroupKey,
       vendor: currentVendor,
+      vendorId: updatedRow.vendorId || null,
+      batch: updatedRow.batch || null,
       purchasePlanDtlID: updatedRow.PurchasePlanDtlID,
       tempRowId: updatedRow.tempRowId,
       shipmentDate: updatedRow.shipmentDate,
@@ -1558,6 +1596,21 @@ $("#addlineTableKanan").click(function () {
 
   const shipmentIdToUse = lastShipmentID || `temp-shipment-${Date.now()}`;
 
+  // PENTING: baris "Add Line" WAJIB bawa data-vendor-id / data-batch /
+  // data-shipment-date. Tanpa ini, commitPaymentChangesFromRow() (dipanggil
+  // tiap user ngetik notes/percent/dll) tidak tahu baris ini punya vendor +
+  // batch/shipmentDate yang mana, jadi rowId/groupKey yang terbentuk jadi
+  // "NaN-batch-0" (tidak nyambung ke plan manapun). Akibatnya tiap kali
+  // user ngetik, tercipta object baru yang "nyasar" di
+  // kumpulanDataTableKiriKanan alih-alih meng-update object yang sama, dan
+  // data yang diketik seolah hilang saat pindah batch/plan.
+  const activeVendorIdForRow = lastSelectedVendorId || "";
+  const activeBatchForRow =
+    window.currentBatch && window.currentBatch !== "0"
+      ? window.currentBatch
+      : "";
+  const activeShipmentDateForRow = window.currentShipmentDate || "";
+
   const newDetailRowHtml = `
      <tr
       data-shipment-id="${shipmentIdToUse}"
@@ -1566,6 +1619,9 @@ $("#addlineTableKanan").click(function () {
       data-temp-rowid="${resolvedTempRowId || ""}"
       data-dtl-id="${resolvedDtlId || ""}"
       data-real-dtl-id="${resolvedDtlId || ""}"
+      data-vendor-id="${activeVendorIdForRow}"
+      data-batch="${activeBatchForRow}"
+      data-shipment-date="${activeShipmentDateForRow}"
     >
 
       <td><input type="text" class="form-control form-control-sm notesTableKanan"></td>
@@ -2496,9 +2552,27 @@ $(document).ready(function () {
 
         if (Array.isArray(kumpulanDataTableKiriKanan)) {
           kumpulanDataTableKiriKanan.forEach((group) => {
-            const groupDtlId =
+            let groupDtlId =
               group.purchasePlanDtlID || group.purchasePlanDtlId || null;
             const groupTempRowId = group.tempRowId || null;
+
+            //  PENTING: group ini bisa jadi payment yang diisi user untuk
+            // batch yang WAKTU ITU belum punya DtlID asli (baru diketik di
+            // form atas, belum pernah Save). Begitu proses Save table-kiri
+            // di atas selesai, DtlID barunya baru ADA lewat `mapping`
+            // (tempRowId -> newDtlId). Row yang SEDANG TAMPIL di DOM sudah
+            // di-resolve pakai `mapping` (lihat logic di atas), tapi group
+            // hasil cache/merge ini sebelumnya TIDAK - jadi PurchasePlanDtlID
+            // tetap null padahal DtlID-nya sudah ada, dan payment-nya gagal
+            // nempel ke plan yang benar pas dikirim ke server. Resolve di
+            // sini juga supaya konsisten dengan row yang tampil di DOM.
+            if (
+              (!groupDtlId || groupDtlId === 0) &&
+              groupTempRowId &&
+              mapping[groupTempRowId]
+            ) {
+              groupDtlId = Number(mapping[groupTempRowId]);
+            }
 
             // Lewati kalau grup ini yang sedang tampil di DOM (sudah masuk di atas)
             if (groupDtlId && dtlIdsAlreadySent.has(Number(groupDtlId))) return;
@@ -6910,7 +6984,10 @@ function loadTableKanan(
       });
 
       if (localData) {
-        if (Array.isArray(localData.termDays)) {
+        if (
+          Array.isArray(localData.termDays) &&
+          Array.isArray(localData.paymentIds)
+        ) {
           finalData = [];
           for (let i = 0; i < localData.paymentIds.length; i++) {
             finalData.push({
@@ -6970,7 +7047,10 @@ function loadTableKanan(
     if (localData) {
       // console.log("  [CACHE] ✓ FOUND batch baru! Menggunakan local cache");
       // Konversi sama seperti di atas
-      if (Array.isArray(localData.termDays)) {
+      if (
+        Array.isArray(localData.termDays) &&
+        Array.isArray(localData.paymentIds)
+      ) {
         finalData = [];
         for (let i = 0; i < localData.paymentIds.length; i++) {
           finalData.push({
