@@ -4803,6 +4803,15 @@ async function rebuildTableKiri(dataUntukTableKiri) {
           : `${vendorId}-date-${shipmentDate}`;
       key = dupIndex > 1 ? `${baseKey}-dup${dupIndex}` : baseKey;
     }
+    // [DEBUG-REBUILD] Lacak key/tempRowId yang di-generate ulang tiap kali
+    // rebuildTableKiri jalan, untuk baris yang BELUM punya DtlID asli.
+    // Kalau plan yang sama dapat key berbeda antar rebuild (mis. dupIndex
+    // beda karena urutan data berubah), ini akan kelihatan di sini.
+    if (!(dataRow.PurchasePlanDtlID && dataRow.PurchasePlanDtlID > 0)) {
+      console.log(
+        `[DEBUG-REBUILD] vendor=${vendorId} batch=${batch || "(none)"} shipmentDate=${shipmentDate || "(none)"} -> key="${key}" tempRowId="temp-${key}" dupIndex=${dupIndex}`,
+      );
+    }
     const displayBatch =
       batch && batch !== "0"
         ? batch
@@ -6137,6 +6146,28 @@ $(document).on("click", ".view-summary-details-btn", function () {
       blanketPODateEst: blanketPODateEst,
     });
 
+    // [DEBUG-VIEWDETAIL] Bukti buat cek match/tidaknya tempRowId: cetak
+    // tempRowId yang lagi dicari (dari button yang baru diklik), dan semua
+    // tempRowId yang ADA di cache (kumpulanDataTableKiriKanan) buat vendor
+    // yang sama, biar kelihatan langsung kalau ada mismatch.
+    console.log(
+      `[DEBUG-VIEWDETAIL] Klik View Detail. Mencari tempRowId="${tempRowId}" (vendor=${vendorId}, batch=${batch || "(none)"}, shipmentDate=${shipmentDate || "(none)"})`,
+    );
+    console.log(
+      "[DEBUG-VIEWDETAIL] Isi cache saat ini (kumpulanDataTableKiriKanan) untuk vendor yang sama:",
+      (window.kumpulanDataTableKiriKanan || [])
+        .filter((g) => String(g.vendorId) === String(vendorId))
+        .map((g) => ({
+          tempRowId: g.tempRowId,
+          purchasePlanDtlId: g.purchasePlanDtlId || g.purchasePlanDtlID || null,
+          batch: g.batch,
+          shipmentDate: g.shipmentDate,
+          hasTermDays: Array.isArray(g.termDays) ? g.termDays.length : 0,
+          hasPayments: Array.isArray(g.payments) ? g.payments.length : 0,
+          exactTempRowIdMatch: g.tempRowId === tempRowId,
+        })),
+    );
+
     loadTableKanan(null, [], {
       vendorId: Number(vendorId),
       batch: batch && batch !== "0" ? Number(batch) : null,
@@ -6624,16 +6655,48 @@ function getNormalizedPaymentArrays(group) {
   return null;
 }
 
-//  Cek apakah sebuah group punya data payment, di format apapun
-// (array lama ATAU payments[] baru yang belum di-save).
+//  Cek apakah sebuah group punya data payment BENERAN (bukan cuma
+// existing.paymentIds[i] "ada" - lihat catatan bug di bawah).
 function groupHasPaymentData(group) {
   if (!group) return false;
+
+  //  PERBAIKAN: sebelumnya cuma cek `paymentIds.length > 0` (atau
+  // `payments` array ada isinya, apapun isinya). Masalahnya: baris
+  // payment yang SUDAH di-save ke server tapi semua kolomnya kosong
+  // (mis. sisa testing sebelumnya - PaymentID ada tapi Percent/Term/
+  // Notes semuanya null) tetap dianggap "punya data payment" oleh cek
+  // lama ini. Kalau grup sampah begini muncul lebih dulu di
+  // kumpulanDataTableKiriKanan (biasanya iya, karena di-preload duluan
+  // sebelum user sempat isi apa-apa), Duplicate Payment akan MEMILIH
+  // grup sampah itu sebagai source (karena dia yang pertama cocok di
+  // loop) - bukan data yang baru saja user isi di plan lain, walau
+  // secara isi grup sampah itu kosong melompong. Sekarang "punya data"
+  // artinya minimal ada SATU baris yang beneran keisi (Percent, Term,
+  // atau Notes bukan null/undefined/kosong) - baris ber-PaymentID tapi
+  // isinya semua kosong tidak lagi dianggap valid sebagai source.
+  const hasRealValue = (v) => v !== null && v !== undefined && v !== "";
+
   if (Array.isArray(group.paymentIds) && group.paymentIds.length > 0) {
-    return true;
+    const hasContentInArrays = group.paymentIds.some((_, idx) => {
+      const percent = Array.isArray(group.percent) ? group.percent[idx] : null;
+      const term = Array.isArray(group.termDays) ? group.termDays[idx] : null;
+      const notes = Array.isArray(group.notes) ? group.notes[idx] : null;
+      return hasRealValue(percent) || hasRealValue(term) || hasRealValue(notes);
+    });
+    if (hasContentInArrays) return true;
   }
+
   if (Array.isArray(group.payments)) {
-    return group.payments.some((p) => p && typeof p === "object");
+    return group.payments.some(
+      (p) =>
+        p &&
+        typeof p === "object" &&
+        (hasRealValue(p.Percent) ||
+          hasRealValue(p.Term) ||
+          hasRealValue(p.Notes)),
+    );
   }
+
   return false;
 }
 
@@ -6665,17 +6728,35 @@ $(document).on("click", "#duplicatePayment", function () {
     const group = sourcesData[i];
     const isSameVendor =
       String(group.vendorId) === String(lastSelectedVendorId);
-    const isCurrentBatch =
-      String(group.vendorId) === String(lastSelectedVendorId) &&
-      String(group.batch) === String(window.currentBatch);
+
+    //  PERBAIKAN: sebelumnya "batch aktif" dicek dengan membandingkan
+    // String(group.batch) === String(window.currentBatch). Ini gagal utk
+    // plan TANPA batch: semua plan no-batch milik vendor yang sama
+    // sama-sama punya batch = null, jadi String(null) === String(null)
+    // selalu TRUE utk plan manapun (bukan cuma plan yang sedang aktif) -
+    // akibatnya begitu ada >1 plan no-batch yang sudah punya payment,
+    // kandidat source yang SEHARUSNYA valid bisa ikut ke-skip kalau
+    // urutannya kebetulan bikin source pertama yang valid malah kelewat
+    // (atau, di kasus lain, source yang benar tidak pernah ditemukan).
+    // Sekarang "plan aktif" dicek pakai identitas asli plan yang sedang
+    // dibuka (DtlID kalau sudah pernah disave, atau tempRowId kalau belum)
+    // - sama seperti yang dipakai di seluruh bagian lain file ini.
+    const groupDtlId = group.purchasePlanDtlId || group.purchasePlanDtlID;
+    const isCurrentPlan = currentDtlRealId
+      ? groupDtlId && String(groupDtlId) === String(currentDtlRealId)
+      : Boolean(
+          currentDtlTempRowId &&
+          group.tempRowId &&
+          String(group.tempRowId) === String(currentDtlTempRowId),
+        );
     const hasPay = groupHasPaymentData(group);
 
     // console.log(
-    //   `  [${i}] vendor=${group.vendorId}, batch=${group.batch}, isSame=${isSameVendor}, hasPay=${hasPay}, isCurrent=${isCurrentBatch}`,
+    //   `  [${i}] vendor=${group.vendorId}, batch=${group.batch}, isSame=${isSameVendor}, hasPay=${hasPay}, isCurrent=${isCurrentPlan}`,
     // );
 
-    // Ambil yang pertama kali cocok (vendor sama, punya payment, bukan batch aktif)
-    if (isSameVendor && hasPay && !isCurrentBatch) {
+    // Ambil yang pertama kali cocok (vendor sama, punya payment, bukan plan yang sedang aktif)
+    if (isSameVendor && hasPay && !isCurrentPlan) {
       sourceGroup = group;
       console.log(`  ✓ Source found at index ${i}`);
       break;
@@ -6688,6 +6769,21 @@ $(document).on("click", "#duplicatePayment", function () {
     );
     return;
   }
+
+  // [DEBUG-DUPLICATE] Bukti isi PERSIS sourceGroup (kedua format sekaligus,
+  // biar kelihatan mana yang valid dan mana yang stale/kosong).
+  console.log(
+    "[DEBUG-DUPLICATE] sourceGroup RAW:",
+    JSON.parse(JSON.stringify(sourceGroup)),
+  );
+  console.log(
+    "[DEBUG-DUPLICATE] sourceGroup.paymentIds:",
+    sourceGroup.paymentIds,
+  );
+  console.log("[DEBUG-DUPLICATE] sourceGroup.termDays:", sourceGroup.termDays);
+  console.log("[DEBUG-DUPLICATE] sourceGroup.percent:", sourceGroup.percent);
+  console.log("[DEBUG-DUPLICATE] sourceGroup.notes:", sourceGroup.notes);
+  console.log("[DEBUG-DUPLICATE] sourceGroup.payments:", sourceGroup.payments);
 
   const targetDtlId = currentDtlRealId;
   const targetTempRowId = currentDtlTempRowId;
@@ -6758,6 +6854,10 @@ $(document).on("click", "#duplicatePayment", function () {
   }
 
   const sourceArrays = getNormalizedPaymentArrays(sourceGroup);
+  console.log(
+    "[DEBUG-DUPLICATE] sourceArrays hasil normalisasi:",
+    sourceArrays,
+  );
 
   if (!sourceArrays) {
     // Seharusnya tidak pernah kejadian karena sourceGroup sudah lolos
@@ -7399,6 +7499,24 @@ function loadTableKanan(
         })
       : null;
 
+    // [DEBUG-LOADTABLEKANAN] Bukti hasil pencarian cache by-tempRowId.
+    console.log(
+      `[DEBUG-LOADTABLEKANAN] Cari by tempRowId="${requestedTempRowId}" -> ${localData ? "KETEMU" : "TIDAK KETEMU"}`,
+    );
+    if (!localData && requestedTempRowId) {
+      const candidatesNoDtlId = (window.kumpulanDataTableKiriKanan || [])
+        .filter((x) => !x.purchasePlanDtlID && !x.purchasePlanDtlId)
+        .map((x) => ({
+          tempRowId: x.tempRowId,
+          exactMatch: x.tempRowId === requestedTempRowId,
+          hasCacheData: hasCacheData(x),
+        }));
+      console.log(
+        "[DEBUG-LOADTABLEKANAN] Semua grup tanpa DtlID yang ada di cache saat ini:",
+        candidatesNoDtlId,
+      );
+    }
+
     // Fallback lama (vendor + batch) untuk kompatibilitas kalau
     // tempRowId tidak dikirim oleh caller.
     if (!localData) {
@@ -7464,8 +7582,24 @@ function loadTableKanan(
     }
   }
 
+  //  PERBAIKAN: sebelumnya cek `!finalData` doang. Masalahnya kalau hasil
+  // pencarian cache di atas "ketemu" grup yang cocok (match DtlID/tempRowId
+  // + vendor + batch) TAPI grup itu ternyata kosong (mis. array
+  // termDays/paymentIds ada tapi isinya 0 item), finalData jadi `[]` -
+  // array kosong itu tetap truthy di JS, jadi `!finalData` bernilai false
+  // dan blok fallback ke dataFromServer di bawah ini TIDAK PERNAH jalan.
+  // Ini persis kasus Duplicate Payment: loadTableKanan() dipanggil dengan
+  // data hasil clone yang sudah benar di `dataFromServer`, tapi karena
+  // cache "ketemu" versi kosongnya duluan, data yang benar itu dibuang dan
+  // tabel kanan dirender kosong ("Tidak ada data untuk ditampilkan")
+  // walau proses duplicate sebenarnya sudah sukses. Sekarang array kosong
+  // dari cache dianggap sama seperti "tidak ketemu", supaya fallback ke
+  // dataFromServer tetap jalan.
+  const finalDataIsEmpty =
+    !finalData || (Array.isArray(finalData) && finalData.length === 0);
+
   if (
-    !finalData &&
+    finalDataIsEmpty &&
     dataFromServer &&
     Array.isArray(dataFromServer) &&
     dataFromServer.length > 0
@@ -7501,12 +7635,18 @@ function loadTableKanan(
 
   if (finalData) {
     const cleanedData = deduplicatePaymentData(finalData);
-    // console.log(`  [RENDER] Menampilkan ${cleanedData.length} payment rows`);
+    // [DEBUG-LOADTABLEKANAN] Bukti data yang benar-benar dikirim ke renderTableKanan.
+    console.log(
+      `[DEBUG-LOADTABLEKANAN] finalData sebelum dedup: ${finalData.length} row(s). Setelah deduplicatePaymentData: ${cleanedData.length} row(s).`,
+      cleanedData,
+    );
     window.allTableKananData = cleanedData;
     renderTableKanan(cleanedData, focusedObject);
   } else {
     // Tidak ada data sama sekali: tampilkan kosong
-    // console.log("  [RENDER] Tidak ada data - tampilkan tabel kosong");
+    console.log(
+      "[DEBUG-LOADTABLEKANAN] finalData null/falsy - render tabel kosong",
+    );
     renderTableKanan([], focusedObject);
   }
 
@@ -7629,13 +7769,29 @@ function renderTableKanan(dataArray, focusedObject = null) {
 
   currentShipmentID = dataArray[0].ShipmentID || null;
   //console.log("currentShipmentID diset:", currentShipmentID);
-  // Deduplikasi berdasarkan kombinasi ShipmentID + Term + Notes
+  //  PERBAIKAN: dedup key lama (ShipmentID+Term+Notes doang) bikin baris
+  // yang MEMANG berbeda tapi kebetulan Term & Notes-nya sama (mis. hasil
+  // Duplicate Payment dengan beberapa baris cicilan yang Term/Notes-nya
+  // sama tapi Percent beda-beda, atau baris apapun yang ShipmentID-nya
+  // sama-sama null) ikut ke-collapse jadi satu baris - baris lain hilang
+  // dari tabel walau datanya valid & berbeda. Setiap baris payment sudah
+  // punya identitas unik sendiri (tempPaymentId dari Duplicate Payment/
+  // commitPaymentChanges, atau PaymentID asli kalau sudah pernah
+  // di-save) - pakai itu dulu sebagai key kalau ada, baru fallback ke
+  // key lama HANYA utk baris yang memang belum punya identitas apapun.
   let uniqueData = [
     ...new Map(
-      dataArray.map((item) => [
-        `${item.ShipmentID}-${item.Term}-${item.Notes}`, //  Composite key
-        item,
-      ]),
+      dataArray.map((item, idx) => {
+        const identityKey =
+          item.tempPaymentId ||
+          item.temp_payment_id ||
+          (item.PaymentID && Number(item.PaymentID) > 0
+            ? `pid-${item.PaymentID}`
+            : null);
+        const key =
+          identityKey || `${item.ShipmentID}-${item.Term}-${item.Notes}-${idx}`; //  Composite key + idx fallback
+        return [key, item];
+      }),
     ).values(),
   ];
 
@@ -7739,6 +7895,14 @@ function renderTableKanan(dataArray, focusedObject = null) {
 
     tbody.append(tr);
   });
+
+  // [DEBUG-RENDER] Bukti akhir: berapa <tr> yang BENERAN ada di DOM #tableKanan
+  // setelah render selesai, plus visibility dari container-nya.
+  console.log(
+    `[DEBUG-RENDER] Selesai render. Jumlah <tr> di #tableKanan sekarang: ${$("#tableKanan tr").length}. ` +
+      `#tableKanan visible: ${$("#tableKanan").is(":visible")}. ` +
+      `#tableKananHead visibility: ${$("#tableKananHead").css("visibility")}.`,
+  );
 
   disableTableKananIfPlanClosed();
 }
