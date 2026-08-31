@@ -684,17 +684,6 @@ function commitPaymentChanges(updatedRow) {
         Number(x.purchasePlanDtlID) === Number(updatedRow.purchasePlanDtlID)
       )
         return true;
-      // PERBAIKAN: kalau kedua sisi sama-sama punya tempRowId, itu adalah
-      // identitas yang PALING valid untuk row yang belum disave (lihat
-      // catatan dupN di rebuildTableKiri) - match atau tidak, JANGAN
-      // lanjut ke pengecekan groupKey di bawah. Sebelumnya, dua plan
-      // dengan vendor sama yang sama-sama belum punya batch/shipmentDate
-      // punya groupKey yang identik walau tempRowId-nya beda, dan
-      // pengecekan groupKey di bawah tetap match - jadi payment dua plan
-      // berbeda ketuker/nimpa satu sama lain saat pindah-pindah.
-      // Juga dihapus cabang lama `x.groupKey === updatedRow.shipmentDate`
-      // yang membandingkan groupKey dengan shipmentDate mentah (bug lama,
-      // dua field yang tidak sebanding, sisa copy-paste).
       if (x.tempRowId && updatedRow.tempRowId) {
         return x.tempRowId === updatedRow.tempRowId;
       }
@@ -4579,7 +4568,6 @@ function fetchDtlIdFromDB(planId, vendor, batch) {
           ` fetchDtlIdFromDB error - Status: ${status}, Error: ${error}`,
           xhr,
         );
-        // Reject agar bisa ditangani oleh catch, atau resolve dengan empty object agar fallback berjalan
         resolve({}); // ← Biar fallback layer berjalan, jangan reject
       },
     });
@@ -4716,19 +4704,6 @@ async function rebuildTableKiri(dataUntukTableKiri) {
 
   const fragment = document.createDocumentFragment();
 
-  // PERBAIKAN: sebelumnya key/tempRowId/rowId untuk plan yang BELUM
-  // punya batch & BELUM di-save (jadi belum ada DtlID) dibentuk murni
-  // dari vendor+batch/shipmentDate. Kalau ada 2+ plan untuk vendor yang
-  // sama yang sama-sama belum diisi batch/shipmentDate (atau kebetulan
-  // shipmentDate-nya sama), semua plan itu jatuh ke key yang IDENTIK -
-  // sehingga secara identitas dianggap 1 row yang sama. Akibatnya payment
-  // yang diisi di plan pertama "ketuker"/menimpa plan lain saat
-  // pindah-pindah. `noDtlKeyCounts` melacak urutan kemunculan tiap
-  // kombinasi vendor+batch/shipmentDate dalam render ini, dan menambahkan
-  // suffix `-dupN` mulai kemunculan kedua supaya tiap plan tetap punya
-  // identitas sendiri sampai batch/shipmentDate-nya benar-benar diisi &
-  // disave (kemunculan pertama TIDAK berubah formatnya, jadi tidak
-  // breaking untuk kasus normal/non-collision).
   const noDtlKeyCounts = {};
 
   for (const dataRow of dataUntukTableKiri) {
@@ -4836,29 +4811,25 @@ async function rebuildTableKiri(dataUntukTableKiri) {
     const isNewBatch =
       !dtlIdFromDataRow || dtlIdFromDataRow <= 0 || !dtlIdExistsInDB;
 
-    // console.log(` Batch Detection for ${key}:`, {
-    //   vendor: vendorId,
-    //   batch: batch,
-    //   hasDtlId: dataRow.PurchasePlanDtlID,
-    //   dtlIdFromCache: realDtlId || null,
-    //   dtlIdFromDataRow: dtlIdFromDataRow,
-    //   dtlIdExistsInDB: dtlIdExistsInDB,
-    //   isNewBatch: isNewBatch,
-    // });
-
     if (!isNewBatch && !realDtlId) {
-      try {
-        const dbResponse = await fetchDtlIdFromDB(planId, vendorId, batch);
+      if (dtlIdFromDataRow && dtlIdFromDataRow > 0) {
+        realDtlId = parseInt(dtlIdFromDataRow);
+      } else if (batch) {
+        // Fallback lama tetap dipertahankan untuk kasus by-batch yang
+        // memang butuh re-lookup (mis. dtlIdFromDataRow belum sinkron).
+        try {
+          const dbResponse = await fetchDtlIdFromDB(planId, vendorId, batch);
 
-        if (dbResponse && dbResponse.ID && parseInt(dbResponse.ID) > 0) {
-          realDtlId = parseInt(dbResponse.ID);
-        } else {
-          // console.log(
-          //   ` Layer 0 (DB) - NOT FOUND: ${key} (status: ${dbResponse?.status || "unknown"})`,
-          // );
+          if (dbResponse && dbResponse.ID && parseInt(dbResponse.ID) > 0) {
+            realDtlId = parseInt(dbResponse.ID);
+          } else {
+            // console.log(
+            //   ` Layer 0 (DB) - NOT FOUND: ${key} (status: ${dbResponse?.status || "unknown"})`,
+            // );
+          }
+        } catch (err) {
+          console.warn(` Layer 0 (DB) error: ${err.message}`);
         }
-      } catch (err) {
-        console.warn(` Layer 0 (DB) error: ${err.message}`);
       }
     } else if (realDtlId) {
       // console.log(
@@ -5200,6 +5171,7 @@ async function rebuildTableKiri(dataUntukTableKiri) {
     }, 100); // Delay 100ms untuk memastikan DOM sudah update
   }
 }
+
 function formatDateToDisplay(dateString) {
   if (!dateString) return ""; // kalau null/undefined, balikin string kosong
   const parts = dateString.split("-");

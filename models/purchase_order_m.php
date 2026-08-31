@@ -2897,10 +2897,19 @@ $shipment_detail = $this->db->query($sql_shipment, [
 
         $this->db->join(
             'dbtPurchasePlanDtlShipmentHistory s',
-            's.PurchasePlanID = d.PurchasePlanID 
+            "s.PurchasePlanID = d.PurchasePlanID 
             AND s.Vendor = d.Vendor 
-            AND s.EndDate IS NULL',
-            'left'  // Tetap left dulu untuk debug
+            AND s.EndDate IS NULL
+            AND (
+                (d.Batch IS NOT NULL AND d.Batch != 0 AND s.Batch = d.Batch)
+                OR
+                (
+                    (d.Batch IS NULL OR d.Batch = 0)
+                    AND CONVERT(date, s.PODateEst) = CONVERT(date, d.BlanketPODateEst)
+                )
+            )",
+            'left',  // Tetap left dulu untuk debug
+            false    // escape=false -> jangan parse/rusak parentheses di atas
         );
 
         $this->db->where('h.PurchasePlanDtlID', $purchasePlanDtlID);
@@ -2909,6 +2918,7 @@ $shipment_detail = $this->db->query($sql_shipment, [
 
         return $this->db->get()->result_array();
     }
+
 
     public function deletePurchasePlanDtlPayment($purchasePlanDtlID)
     {
