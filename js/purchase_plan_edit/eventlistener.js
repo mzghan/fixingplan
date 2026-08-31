@@ -4704,6 +4704,19 @@ async function rebuildTableKiri(dataUntukTableKiri) {
 
   const fragment = document.createDocumentFragment();
 
+  // PERBAIKAN: sebelumnya key/tempRowId/rowId untuk plan yang BELUM
+  // punya batch & BELUM di-save (jadi belum ada DtlID) dibentuk murni
+  // dari vendor+batch/shipmentDate. Kalau ada 2+ plan untuk vendor yang
+  // sama yang sama-sama belum diisi batch/shipmentDate (atau kebetulan
+  // shipmentDate-nya sama), semua plan itu jatuh ke key yang IDENTIK -
+  // sehingga secara identitas dianggap 1 row yang sama. Akibatnya payment
+  // yang diisi di plan pertama "ketuker"/menimpa plan lain saat
+  // pindah-pindah. `noDtlKeyCounts` melacak urutan kemunculan tiap
+  // kombinasi vendor+batch/shipmentDate dalam render ini, dan menambahkan
+  // suffix `-dupN` mulai kemunculan kedua supaya tiap plan tetap punya
+  // identitas sendiri sampai batch/shipmentDate-nya benar-benar diisi &
+  // disave (kemunculan pertama TIDAK berubah formatnya, jadi tidak
+  // breaking untuk kasus normal/non-collision).
   const noDtlKeyCounts = {};
 
   for (const dataRow of dataUntukTableKiri) {
@@ -4811,7 +4824,28 @@ async function rebuildTableKiri(dataUntukTableKiri) {
     const isNewBatch =
       !dtlIdFromDataRow || dtlIdFromDataRow <= 0 || !dtlIdExistsInDB;
 
+    // console.log(` Batch Detection for ${key}:`, {
+    //   vendor: vendorId,
+    //   batch: batch,
+    //   hasDtlId: dataRow.PurchasePlanDtlID,
+    //   dtlIdFromCache: realDtlId || null,
+    //   dtlIdFromDataRow: dtlIdFromDataRow,
+    //   dtlIdExistsInDB: dtlIdExistsInDB,
+    //   isNewBatch: isNewBatch,
+    // });
+
     if (!isNewBatch && !realDtlId) {
+      // PERBAIKAN (kondisi 1 - plan tanpa batch): dtlIdFromDataRow di sini
+      // SUDAH confirmed valid & ada di DB (itulah syarat isNewBatch=false,
+      // lihat dtlIdExistsInDB di atas). Sebelumnya block ini malah
+      // membuang nilai itu dan re-fetch via fetchDtlIdFromDB(plan, vendor,
+      // batch) - padahal endpoint itu mencari berdasarkan vendor+batch,
+      // sehingga untuk plan TANPA batch (batch = null) query selalu balik
+      // kosong ("DB response kosong atau tidak valid"). realDtlId jadi
+      // tetap null, row table kiri kehilangan data-dtl-id, dan
+      // preloadAllPaymentData() gak nemu DtlID apapun buat di-load ulang
+      // setelah save+reload halaman. Pakai langsung dtlIdFromDataRow yang
+      // sudah confirmed, tanpa re-query yang unreliable itu.
       if (dtlIdFromDataRow && dtlIdFromDataRow > 0) {
         realDtlId = parseInt(dtlIdFromDataRow);
       } else if (batch) {
