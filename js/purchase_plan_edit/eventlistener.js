@@ -3578,13 +3578,74 @@ function loadInitialPurchasePlanData(id) {
         const allIDs = response.details.map((item) => item.ID);
         arrdbtPurchasePlanDtl_ID = allIDs;
         //  Bangun window.allTableKananData langsung dari details
-        window.allTableKananData = response.details.map((d) => ({
+        let rawAllTableKananData = response.details.map((d) => ({
           Vendor: d.Vendor || d.vendor || null,
           Batch: d.Batch || d.batch || null,
           BlanketPODateEst: d.BlanketPODateEst || d.blanketPODateEst || null,
           ShipmentDate: d.ShipmentDate || d.shipmentDate || null,
           PurchasePlanDtlID: d.ID || d.PurchasePlanDtlID || null,
         }));
+
+        //  FIX: dbtPurchasePlanDtl TIDAK punya kolom ShipmentDate, jadi
+        // ShipmentDate tiap dtl row cuma "ditempel" berdasarkan URUTAN
+        // KEMUNCULAN (index ke-0, ke-1, dst) per vendor terhadap
+        // response.shipments (lihat blok assignment di bawah). Ini valid
+        // SELAMA jumlah dtl row untuk vendor tsb persis sama dengan
+        // jumlah shipment-nya.
+        //
+        // Tapi untuk plan TANPA batch, tiap kali payment di-save, backend
+        // membuat dtl row BARU alih-alih update yang lama (lihat
+        // getLatestDtlId - matching by Batch=NULL menyamaratakan semua
+        // dtl row vendor itu, jadi tidak bisa dipakai untuk "temukan &
+        // update row lama"). Akibatnya utk 1 vendor bisa ada dtl row
+        // "kosong" (dibuat awal, belum ada payment) DAN dtl row "baru"
+        // (dibuat saat save, isi payment beneran) dengan BlanketPODateEst
+        // yang SAMA persis - dua entri untuk satu shipment yang sama.
+        //
+        // Percobaan sebelumnya cuma "melewati" dtl row lama itu (tidak
+        // dikasih ShipmentDate) tapi tetap MENYIMPANNYA di
+        // allTableKananData. Ternyata banyak fungsi LAIN di file ini
+        // (autoRecalculateTableKiri, cache lookup, fitur duplicatePayment,
+        // dst) ikut scan array ini berdasarkan Vendor+Batch saja / jalur
+        // lain yang tidak selalu mempertimbangkan ShipmentDate - jadi dtl
+        // row lama yang kosong itu tetap bisa "ketemu" lagi dan bikin
+        // fitur lain (duplicatePayment) salah asosiasi.
+        //
+        // FIX final: dedupe di SUMBER-nya - buang total dtl row lama/
+        // duplikat dari allTableKananData sebelum dipakai fungsi manapun.
+        // Untuk grup vendor+BlanketPODateEst yang sama (khusus row tanpa
+        // batch), hanya sisakan dtl row dengan ID TERBESAR (paling baru) -
+        // konsisten dengan pola "ambil ID terbesar" yang sudah dipakai di
+        // backend (getLatestDtlId, ROW_NUMBER ... ORDER BY ID DESC).
+        // Setelah dedupe, jumlah dtl row tanpa batch akan kembali persis
+        // sama dengan jumlah shipment-nya, jadi index-based ShipmentDate
+        // matching di bawah otomatis benar lagi tanpa perlu logic khusus,
+        // dan tidak ada lagi dtl row "hantu" yang bisa bikin fungsi lain
+        // salah pilih.
+        const latestNoBatchDtlByVendorAndDate = {};
+        rawAllTableKananData.forEach((leftRow) => {
+          const hasBatch = leftRow.Batch && Number(leftRow.Batch) !== 0;
+          if (hasBatch) return;
+
+          const dedupeKey = `${leftRow.Vendor}::${leftRow.BlanketPODateEst || "null"}`;
+          const currentBest = latestNoBatchDtlByVendorAndDate[dedupeKey];
+          if (
+            !currentBest ||
+            Number(leftRow.PurchasePlanDtlID) >
+              Number(currentBest.PurchasePlanDtlID)
+          ) {
+            latestNoBatchDtlByVendorAndDate[dedupeKey] = leftRow;
+          }
+        });
+
+        window.allTableKananData = rawAllTableKananData.filter((leftRow) => {
+          const hasBatch = leftRow.Batch && Number(leftRow.Batch) !== 0;
+          if (hasBatch) return true; // baris dengan batch tidak disentuh
+
+          const dedupeKey = `${leftRow.Vendor}::${leftRow.BlanketPODateEst || "null"}`;
+          const winner = latestNoBatchDtlByVendorAndDate[dedupeKey];
+          return winner === leftRow; // hanya sisakan yang ID-nya terbesar
+        });
 
         //  Tambahkan shipmentDate ke data kiri dengan mencocokkan Vendor + Batch
         if (response.shipments && response.shipments.length > 0) {
