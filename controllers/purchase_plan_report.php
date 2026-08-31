@@ -40,7 +40,9 @@ public function get_dtl_id()
     $vendor = $this->input->get('vendor');
     $batch  = $this->input->get('batch');
 
-    $data = $this->pom->getLatestDtlId($planId, $vendor, $batch);
+    $blanketPODateEst = $this->input->get('blanket');
+
+    $data = $this->pom->getLatestDtlId($planId, $vendor, $batch, $blanketPODateEst);
     
     $response = [
         'ID' => ($data && isset($data->ID)) ? (int)$data->ID : null,
@@ -1663,15 +1665,16 @@ public function updateTableKiri()
 
 private function _saveOrUpdateDtl($r, &$mapping)
 {
-    $DtlID = (int)$r['DtlID'];
+    $DtlID = (int)($r['DtlID'] ?? 0);
+    $batchValue = !empty($r['Batch']) ? $r['Batch'] : null;
+    $blanketEst = !empty($r['BlanketPODateEst']) ? $r['BlanketPODateEst'] : null;
 
-    // CASE UPDATE
     if ($DtlID > 0) {
         $data = [
             'PurchasePlanID' => $r['PurchasePlanID'],
             'Vendor' => $r['Vendor'],
-            'Batch' => !empty($r['Batch']) ? $r['Batch'] : null,
-            'BlanketPODateEst' => !empty($r['BlanketPODateEst']) ? $r['BlanketPODateEst'] : null,
+            'Batch' => $batchValue,
+            'BlanketPODateEst' => $blanketEst,
             'Total' => $r['Total'],
         ];
 
@@ -1680,12 +1683,31 @@ private function _saveOrUpdateDtl($r, &$mapping)
         return;
     }
 
-    // CASE INSERT
+    $existing = $this->pom->getLatestDtlId(
+        $r['PurchasePlanID'],
+        $r['Vendor'],
+        $batchValue,
+        $blanketEst
+    );
+
+    if ($existing && !empty($existing->ID)) {
+        $data = [
+            'PurchasePlanID' => $r['PurchasePlanID'],
+            'Vendor' => $r['Vendor'],
+            'Batch' => $batchValue,
+            'BlanketPODateEst' => $blanketEst,
+            'Total' => $r['Total'],
+        ];
+        $this->db->where('ID', $existing->ID)->update('dbtPurchasePlanDtl', $data);
+        $mapping[$r['tempRowId']] = (int)$existing->ID;
+        return;
+    }
+
     $data = [
         'PurchasePlanID' => $r['PurchasePlanID'],
         'Vendor' => $r['Vendor'],
-        'Batch' => !empty($r['Batch']) ? $r['Batch'] : null,
-        'BlanketPODateEst' => !empty($r['BlanketPODateEst']) ? $r['BlanketPODateEst'] : null,
+        'Batch' => $batchValue,
+        'BlanketPODateEst' => $blanketEst,
         'Total' => $r['Total'],
     ];
 

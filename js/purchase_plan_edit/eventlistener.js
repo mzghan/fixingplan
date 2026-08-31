@@ -3439,12 +3439,6 @@ function loadInitialPurchasePlanData(id) {
     success: function (response) {
       if (response && response.status === "success") {
         let main = response.main_plan;
-        // console.log(" Currency Data from dbtPurchasePlan:", {
-        //   CurrID: main.CurrID,
-        //   CurrRate: main.CurrRate,
-        // });
-        // console.log("Nilai Closed dari main_plan:", main.Closed);
-
         console.log("=== DATA FROM CONTROLLER ===");
         console.log("main_plan:", JSON.stringify(main, null, 2));
         console.log("shipments:", response.shipments);

@@ -1377,33 +1377,34 @@ public function check_table_structure()
     }
 
 
-    public function getLatestDtlId($planId, $vendor, $batch)
+    public function getLatestDtlId($planId, $vendor, $batch, $blanketPODateEst = null)
     {
+        
+        $hasBatch = !empty($batch);
 
-        $result = $this->db
+        $query = $this->db
             ->select('ID')
             ->from('dbtPurchasePlanDtl')
             ->where('PurchasePlanID', $planId)
             ->where('Vendor', $vendor)
-            ->where('Batch', $batch)
-            ->where('Void', 0)
-            ->order_by('ID', 'DESC')  // <- Ambil ID terbesar (paling baru)
+            ->where('Void', 0);
+
+        if ($hasBatch) {
+            $query->where('Batch', $batch);
+        } else {
+            $query->where('Batch IS NULL', null, false);
+
+            if ($blanketPODateEst !== null && $blanketPODateEst !== '') {
+                $query->where('BlanketPODateEst', $blanketPODateEst);
+            }
+        }
+
+        $result = $query
+            ->order_by('ID', 'DESC')  // <- Ambil ID terbesar (paling baru) di antara sisa kandidat
             ->limit(1)
             ->get()
             ->row();
-        
-        if (!$result) {
-            $result = $this->db
-                ->select('ID')
-                ->from('dbtPurchasePlanDtl')
-                ->where('PurchasePlanID', $planId)
-                ->where('Batch', $batch)
-                ->where('Void', 0)
-                ->order_by('ID', 'DESC')
-                ->limit(1)
-                ->get()
-                ->row();
-        }
+
         
         return $result;
     }
